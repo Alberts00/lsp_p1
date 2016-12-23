@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.3)
 project(lsp_p1)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -Wall -Werror")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -Werror -pthread ")
 
 set(SERVER_SOURCE_FILES server/main.c)
 set(CLIENT_SOURCE_FILES client/main.c)
