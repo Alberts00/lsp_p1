@@ -15,8 +15,10 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <signal.h>
+#include <stdbool.h>
 
 #define MAX_PLAYERS 16
+#define MAX_PACKET_SIZE 1472
 
 void exitWithMessage(char error[]);
 
@@ -35,7 +37,7 @@ int startServer();
 
 // Packet type enumerations
 enum packet_t {
-    JOIN, ACK, START, END, MAP, PLAYERS, SCORE, MOVE ,MESSAGE, QUIT, JOINED, PLAYER_DISCONNECTED
+    JOIN, ACK, START, END, MAP, PLAYERS, SCORE, MOVE, MESSAGE, QUIT, JOINED, PLAYER_DISCONNECTED
 };
 
 //Map object enumerations
@@ -64,16 +66,16 @@ enum playerType_t {
 typedef struct clientInfo {
     int clientSock;
     unsigned int id;
-    in_addr_t ip;
+    struct in_addr ip;
     char name[20];
+    bool active;
 } clientInfo_t;
 
 
 /*
  * Globals
  */
-unsigned int CLIENT_ID_ITERATOR = 1;
-int clientSockets[MAX_PLAYERS] = {0};
+clientInfo_t* clientArr[MAX_PLAYERS];
 
 
 void *safe_malloc(size_t size) {
@@ -118,13 +120,35 @@ void signal_callback_handler(int signum) {
     exit(signum);
 }
 
+/*
+ * Returns initialized client or NULL if no free spots
+ */
+clientInfo_t* initClient(int clientSock, struct in_addr ip){
+    static unsigned int CLIENT_ID_ITERATOR = 1;
+
+    for (int i=0; i<MAX_PLAYERS;i++){
+        if ( clientArr[i]==NULL ){
+            clientInfo_t *client = safe_malloc(sizeof(clientInfo_t));
+            client->id = CLIENT_ID_ITERATOR++;
+            client->clientSock = clientSock;
+            client->ip = ip;
+            clientArr[i] = client;
+            return client;
+        }
+    }
+    return NULL;
+}
+
 int startServer() {
     int socket_desc, client_sock, c;
     struct sockaddr_in server, client;
 
     //Create socket
     socket_desc = socket(AF_INET, SOCK_STREAM, 0);
-    if (socket_desc == -1) {
+    // set SO_REUSEADDR on a socket to true (1):
+    int optval = 1;
+    setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
+    if (socket_desc == -1 || optval == -1) {
         printf("Unable to create a socket");
     }
 
@@ -132,18 +156,14 @@ int startServer() {
     server.sin_addr.s_addr = INADDR_ANY;
     server.sin_port = htons(8888);
 
-    //Bind
+    //Binds TCP
     if (bind(socket_desc, (struct sockaddr *) &server, sizeof(server)) < 0) {
         printf("Unable to bind");
         return 1;
     }
 
-    //Listen
+    //Listen to incoming connections
     listen(socket_desc, 3);
-
-    //Accept and incoming connection
-    puts("Waiting for incoming connections...");
-    c = sizeof(struct sockaddr_in);
 
 
     //Accept and incoming connection
@@ -151,26 +171,15 @@ int startServer() {
     c = sizeof(struct sockaddr_in);
     pthread_t thread_id;
 
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        clientSockets[i] = -1;
-    }
-
 
     while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
-        puts("Connection accepted");
-        clientInfo_t currentClient;
-        currentClient.id = CLIENT_ID_ITERATOR++;
-        currentClient.clientSock = client_sock;
-        currentClient.ip = client.sin_addr.s_addr;
+        printf("Connection accepted from %s \n", inet_ntoa(client.sin_addr));
 
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (clientSockets[i] == -1) {
-                clientSockets[i] = client_sock;
-                break;
-            }
-        }
+        clientInfo_t* currentClient = initClient(client_sock, client.sin_addr);
+        //TODO ADD HANDLING IF SERVER IS FULL (currentClient==NULL, THEN FULL)
 
-        if (pthread_create(&thread_id, NULL, handle_connection, (void *) &currentClient) < 0) {
+
+        if (pthread_create(&thread_id, NULL, handle_connection, (void *) currentClient) < 0) {
             perror("could not create thread");
             return 1;
         }
@@ -189,19 +198,69 @@ int startServer() {
 
 }
 
+
+void threadErrorHandler(char errormsg[], int retval, clientInfo_t client) {
+    puts(errormsg);
+    close(client.clientSock);
+    pthread_exit(&retval);
+}
+
+void receivePacket(char *buffer, ssize_t *bufferPointer, int sock) {
+    *bufferPointer = 0;
+    memset(buffer, 0, MAX_PACKET_SIZE);
+    *bufferPointer = recv(sock, buffer, MAX_PACKET_SIZE, 0);
+}
+
+void sendPacket(char *buffer, ssize_t *bufferPointer, int sock) {
+    write(sock, buffer, (size_t)bufferPointer);
+
+}
+
+/*
+ * Function which processes new players (TCP)
+ *      Receives JOIN, registers player nickname if possible
+ *      Sends ACK to acknowledge the new nickname or ACK with negative ID indicating that player cannot join
+ *      Sends JOINED to inform other players that a new player has joined.
+ */
+void processNewPlayer(clientInfo_t clientInfo) {
+    char buffer[MAX_PACKET_SIZE] = {0};
+    ssize_t bufferPointer = 0;
+    /*
+     *  0 - Packet type
+     *  1-21 - Nickname
+     */
+    bufferPointer = recv(clientInfo.clientSock, buffer, MAX_PACKET_SIZE, 0);
+    if (bufferPointer == 0) {
+        threadErrorHandler("Unauthenticated client disconnected", 1, clientInfo);
+    }
+    else if (bufferPointer == -1) {
+        threadErrorHandler("Recv failed", 2, clientInfo);
+    }
+    if ((int) buffer[0] == JOIN) {
+        memcpy(clientInfo.name, buffer + 1, 20);
+        //TODO Check if the newly connected player has enough space and the nickname isn't used
+
+
+        printf("New player %s from %s\n", clientInfo.name, inet_ntoa(clientInfo.ip));
+
+
+    }
+    else {
+        threadErrorHandler("Incorrect command received", 3, clientInfo);
+    }
+
+
+}
+
 void *handle_connection(void *conn) {
     //Get the socket descriptor
-
     clientInfo_t clientInfo = *(clientInfo_t *) conn;
     int sock = clientInfo.clientSock;
-    ssize_t read_size;
-    char *message, client_message[2000];
 
+    //New client connection
+    processNewPlayer(clientInfo);
     //Send some messages to the client
-    message = "Greetings! I am your connection handler\n";
-    write(sock, message, strlen(message));
-
-    message = "Now type something and i shall repeat what you type \n";
+    /*message = "Greetings! I am your connection handler\n";
     write(sock, message, strlen(message));
 
     //Receive a message from client
@@ -231,15 +290,22 @@ void *handle_connection(void *conn) {
     }
     else if (read_size == -1) {
         perror("recv failed");
-    }
+    }*/
 
     return 0;
+}
+
+void initVariables(){
+    // Initialize player array
+    for (int i=0; i<MAX_PLAYERS; i++){
+        clientArr[i] = NULL;
+    }
 }
 
 
 int main(int argc, char *argv[]) {
     signal(SIGINT, signal_callback_handler);
-
+    initVariables();
     startServer();
 
 
