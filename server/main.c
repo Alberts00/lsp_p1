@@ -19,6 +19,10 @@
 
 #define MAX_PLAYERS 16
 #define MAX_PACKET_SIZE 1472
+#define MAX_NICK_SIZE 20
+
+
+typedef struct clientInfo clientInfo_t;
 
 void exitWithMessage(char error[]);
 
@@ -30,10 +34,15 @@ void *safe_malloc(size_t);
 
 int startServer();
 
+clientInfo_t *initClientData(int, struct in_addr);
+
 /*
  * Enumerations
  * http://en.cppreference.com/w/c/language/enum
  */
+enum connectionError_t {
+    ERROR_NAME_IN_USE=-1, ERROR_SERVER_FULL=-2
+};
 
 // Packet type enumerations
 enum packet_t {
@@ -68,14 +77,13 @@ typedef struct clientInfo {
     unsigned int id;
     struct in_addr ip;
     char name[20];
-    bool active;
 } clientInfo_t;
 
 
 /*
  * Globals
  */
-clientInfo_t* clientArr[MAX_PLAYERS];
+clientInfo_t *clientArr[MAX_PLAYERS];
 
 
 void *safe_malloc(size_t size) {
@@ -121,23 +129,45 @@ void signal_callback_handler(int signum) {
 }
 
 /*
- * Returns initialized client or NULL if no free spots
+ * Returns client pointer to array or NULL if no free spots
  */
-clientInfo_t* initClient(int clientSock, struct in_addr ip){
-    static unsigned int CLIENT_ID_ITERATOR = 1;
+clientInfo_t *findClientSpot(clientInfo_t *client) {
 
-    for (int i=0; i<MAX_PLAYERS;i++){
-        if ( clientArr[i]==NULL ){
-            clientInfo_t *client = safe_malloc(sizeof(clientInfo_t));
-            client->id = CLIENT_ID_ITERATOR++;
-            client->clientSock = clientSock;
-            client->ip = ip;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] == NULL) {
             clientArr[i] = client;
             return client;
         }
     }
     return NULL;
 }
+
+/*
+ * Returns true if the name is in use, false otherwise
+ */
+bool isNameUsed(char *name) {
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] != NULL) {
+            if (strcmp(clientArr[i]->name, name) == 0) return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Returns initialized client struct
+ */
+clientInfo_t *initClientData(int clientSock, struct in_addr ip) {
+    static unsigned int CLIENT_ID_ITERATOR = 1;
+
+    clientInfo_t *client = safe_malloc(sizeof(clientInfo_t));
+    client->id = CLIENT_ID_ITERATOR++;
+    client->clientSock = clientSock;
+    client->ip = ip;
+    return client;
+}
+
 
 int startServer() {
     int socket_desc, client_sock, c;
@@ -175,8 +205,7 @@ int startServer() {
     while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
         printf("Connection accepted from %s \n", inet_ntoa(client.sin_addr));
 
-        clientInfo_t* currentClient = initClient(client_sock, client.sin_addr);
-        //TODO ADD HANDLING IF SERVER IS FULL (currentClient==NULL, THEN FULL)
+        clientInfo_t *currentClient = initClientData(client_sock, client.sin_addr);
 
 
         if (pthread_create(&thread_id, NULL, handle_connection, (void *) currentClient) < 0) {
@@ -198,10 +227,20 @@ int startServer() {
 
 }
 
-
-void threadErrorHandler(char errormsg[], int retval, clientInfo_t client) {
-    puts(errormsg);
-    close(client.clientSock);
+/**
+ * Thread fatal error handler to exit gracefully
+ *  Prints the error message
+ *  Closes the client socket
+ *  Removes the client from client list array and cleans up the memory
+ *  Exits the thread
+ */
+void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
+    printf("%s: %s\n", inet_ntoa(client->ip), errormsg);
+    close(client->clientSock);
+    for (int i=0; i<MAX_PLAYERS; i++) {
+        if (client == clientArr[i]) clientArr[i]=NULL;
+    }
+    free(client);
     pthread_exit(&retval);
 }
 
@@ -211,25 +250,36 @@ void receivePacket(char *buffer, ssize_t *bufferPointer, int sock) {
     *bufferPointer = recv(sock, buffer, MAX_PACKET_SIZE, 0);
 }
 
-void sendPacket(char *buffer, ssize_t *bufferPointer, int sock) {
-    write(sock, buffer, (size_t)bufferPointer);
-
+/**
+ * Sends the buffer to socket
+ */
+void sendPacket(char *buffer, ssize_t bufferPointer, int sock) {
+    write(sock, buffer, (size_t) bufferPointer);
 }
 
-/*
+/**
+ * Initializes empty packet and bufferPointer
+ */
+void initPacket(char *buffer, ssize_t *bufferPointer){
+    *bufferPointer = 0;
+    memset(buffer, 0, MAX_PACKET_SIZE);
+}
+
+
+/**
  * Function which processes new players (TCP)
  *      Receives JOIN, registers player nickname if possible
  *      Sends ACK to acknowledge the new nickname or ACK with negative ID indicating that player cannot join
  *      Sends JOINED to inform other players that a new player has joined.
  */
-void processNewPlayer(clientInfo_t clientInfo) {
+void processNewPlayer(clientInfo_t *clientInfo) {
     char buffer[MAX_PACKET_SIZE] = {0};
     ssize_t bufferPointer = 0;
     /*
      *  0 - Packet type
      *  1-21 - Nickname
      */
-    bufferPointer = recv(clientInfo.clientSock, buffer, MAX_PACKET_SIZE, 0);
+    bufferPointer = recv(clientInfo->clientSock, buffer, MAX_PACKET_SIZE, 0);
     if (bufferPointer == 0) {
         threadErrorHandler("Unauthenticated client disconnected", 1, clientInfo);
     }
@@ -237,11 +287,34 @@ void processNewPlayer(clientInfo_t clientInfo) {
         threadErrorHandler("Recv failed", 2, clientInfo);
     }
     if ((int) buffer[0] == JOIN) {
-        memcpy(clientInfo.name, buffer + 1, 20);
-        //TODO Check if the newly connected player has enough space and the nickname isn't used
+        memcpy(clientInfo->name, buffer + 1, 20);
+        if (isNameUsed(clientInfo->name)) {
+            initPacket(buffer, &bufferPointer);
+            buffer[0] = ACK;
+            int errval = ERROR_NAME_IN_USE;
+            memcpy(buffer+1, &errval, sizeof(int));
+            sendPacket(buffer, 5, clientInfo->clientSock);
+
+            threadErrorHandler("Name is in use", 5, clientInfo);
+        }
+        if (findClientSpot(clientInfo) == NULL) {
+            initPacket(buffer, &bufferPointer);
+            buffer[0] = ACK;
+            int errval = ERROR_SERVER_FULL;
+            memcpy(buffer+1, &errval, sizeof(int));
+            sendPacket(buffer, 5, clientInfo->clientSock);
+            threadErrorHandler("Server is full", 4, clientInfo);
+        }
+
+        // Everything OK, sending user ID
+        initPacket(buffer, &bufferPointer);
+        buffer[0] = ACK;
+        memcpy(buffer+1, &clientInfo->id, sizeof(int));
+        sendPacket(buffer, 5, clientInfo->clientSock);
 
 
-        printf("New player %s from %s\n", clientInfo.name, inet_ntoa(clientInfo.ip));
+
+        printf("New player %s(%d) from %s\n", clientInfo->name,clientInfo->id, inet_ntoa(clientInfo->ip));
 
 
     }
@@ -254,8 +327,8 @@ void processNewPlayer(clientInfo_t clientInfo) {
 
 void *handle_connection(void *conn) {
     //Get the socket descriptor
-    clientInfo_t clientInfo = *(clientInfo_t *) conn;
-    int sock = clientInfo.clientSock;
+    clientInfo_t *clientInfo = (clientInfo_t *) conn;
+    int sock = clientInfo->clientSock;
 
     //New client connection
     processNewPlayer(clientInfo);
@@ -295,9 +368,9 @@ void *handle_connection(void *conn) {
     return 0;
 }
 
-void initVariables(){
+void initVariables() {
     // Initialize player array
-    for (int i=0; i<MAX_PLAYERS; i++){
+    for (int i = 0; i < MAX_PLAYERS; i++) {
         clientArr[i] = NULL;
     }
 }
