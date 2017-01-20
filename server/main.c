@@ -30,13 +30,32 @@ int startServer();
 
 /*
  * Enumerations
+ * http://en.cppreference.com/w/c/language/enum
  */
 
 // Packet type enumerations
-enum packet_type {
-    REQUEST, REQUEST_ACK, DONE, DONE_ACK
+enum packet_t {
+    JOIN, ACK, START, END, MAP, PLAYERS, SCORE, MOVE ,MESSAGE, QUIT, JOINED, PLAYER_DISCONNECTED
 };
 
+//Map object enumerations
+enum mapObjecT_t {
+    None, Dot, Wall, PowerPellet, Invincibility, Score
+};
+
+// Client movement enumerations
+enum clientMovement_t {
+    UP, DOWN, RIGHT, LEFT
+};
+
+// Player state enumerations
+enum playerState_t {
+    NORMAL, DEAD
+};
+// Player type enumerations
+enum playerType_t {
+    Pacman, Ghost
+};
 
 /*
  * Structs
