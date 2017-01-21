@@ -19,7 +19,9 @@
 
 #define MAX_PLAYERS 16
 #define MAX_PACKET_SIZE 1472
+#define PACKET_TYPE_SIZE 1
 #define MAX_NICK_SIZE 20
+
 
 
 typedef struct clientInfo clientInfo_t;
@@ -36,7 +38,11 @@ int startServer();
 
 void initPacket(char *buffer, ssize_t *bufferPointer);
 
+void sendMassPacket(char *buffer, ssize_t bufferPointer);
+
 clientInfo_t *initClientData(int, struct in_addr);
+
+void sendPlayerDisconnect(clientInfo_t *client);
 
 /*
  * Enumerations
@@ -240,10 +246,20 @@ void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
     printf("%s: %s\n", inet_ntoa(client->ip), errormsg);
     close(client->clientSock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (client == clientArr[i]) clientArr[i] = NULL;
+        if (client == clientArr[i]) {
+            clientArr[i] = NULL;
+            sendPlayerDisconnect(client);
+        }
     }
     free(client);
     pthread_exit(&retval);
+}
+
+void sendPlayerDisconnect(clientInfo_t *client){
+    char buffer[MAX_PACKET_SIZE] = {0};
+    buffer[0] = PLAYER_DISCONNECTED;
+    memcpy(buffer + PACKET_TYPE_SIZE, &client->id, sizeof(int));
+    sendMassPacket(buffer, PACKET_TYPE_SIZE+sizeof(int));
 }
 
 void receivePacket(char *buffer, ssize_t *bufferPointer, int sock) {
@@ -299,12 +315,12 @@ void processNewPlayer(clientInfo_t *clientInfo) {
         threadErrorHandler("Recv failed", 2, clientInfo);
     }
     if ((int) buffer[0] == JOIN) {
-        memcpy(clientInfo->name, buffer + 1, 20);
+        memcpy(clientInfo->name, buffer + PACKET_TYPE_SIZE, 20);
         if (isNameUsed(clientInfo->name)) {
             initPacket(buffer, &bufferPointer);
             buffer[0] = ACK;
             int errval = ERROR_NAME_IN_USE;
-            memcpy(buffer + 1, &errval, sizeof(int));
+            memcpy(buffer + PACKET_TYPE_SIZE, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo->clientSock);
 
             threadErrorHandler("Name is in use", 5, clientInfo);
@@ -313,7 +329,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             initPacket(buffer, &bufferPointer);
             buffer[0] = ACK;
             int errval = ERROR_SERVER_FULL;
-            memcpy(buffer + 1, &errval, sizeof(int));
+            memcpy(buffer + PACKET_TYPE_SIZE, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo->clientSock);
             threadErrorHandler("Server is full", 4, clientInfo);
         }
@@ -321,15 +337,15 @@ void processNewPlayer(clientInfo_t *clientInfo) {
         // Everything OK, sending user ID
         initPacket(buffer, &bufferPointer);
         buffer[0] = ACK;
-        memcpy(buffer + 1, &clientInfo->id, sizeof(int));
-        sendPacket(buffer, sizeof(int) + 1, clientInfo->clientSock);
+        memcpy(buffer + PACKET_TYPE_SIZE, &clientInfo->id, sizeof(int));
+        sendPacket(buffer, sizeof(int) + PACKET_TYPE_SIZE, clientInfo->clientSock);
 
         //Sending JOINED packet to everyone
         initPacket(buffer, &bufferPointer);
         buffer[0] = JOINED;
-        memcpy(buffer + 1, &clientInfo->id, sizeof(int)); //Player ID
-        memcpy(buffer + 1 + sizeof(int), &clientInfo->name, MAX_NICK_SIZE); //Player name
-        sendMassPacket(buffer, sizeof(int) + 1 + MAX_NICK_SIZE);
+        memcpy(buffer + PACKET_TYPE_SIZE, &clientInfo->id, sizeof(int)); //Player ID
+        memcpy(buffer + PACKET_TYPE_SIZE + sizeof(int), &clientInfo->name, MAX_NICK_SIZE); //Player name
+        sendMassPacket(buffer, sizeof(int) + PACKET_TYPE_SIZE + MAX_NICK_SIZE);
 
 
         printf("New player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
@@ -350,6 +366,7 @@ void *handle_connection(void *conn) {
 
     //New client connection
     processNewPlayer(clientInfo);
+
     //Send some messages to the client
     /*message = "Greetings! I am your connection handler\n";
     write(sock, message, strlen(message));
@@ -395,6 +412,7 @@ void initVariables() {
 
 
 int main(int argc, char *argv[]) {
+
     signal(SIGINT, signal_callback_handler);
     initVariables();
     startServer();
