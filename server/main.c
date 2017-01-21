@@ -16,11 +16,14 @@
 #include <unistd.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <dirent.h>
 
 #define MAX_PLAYERS 16
 #define MAX_PACKET_SIZE 1472
 #define PACKET_TYPE_SIZE 1
 #define MAX_NICK_SIZE 20
+#define MAX_MAP_HEIGHT 100
+#define MAX_MAP_WIDTH 100
 
 
 typedef struct clientInfo clientInfo_t;
@@ -87,11 +90,23 @@ typedef struct clientInfo {
 } clientInfo_t;
 
 
+typedef struct mapList {
+    char filename[FILENAME_MAX];
+    int width;     //x
+    int height;    //y
+    bool active;
+    char map[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+    struct mapList *next;
+} mapList_t;
+
+
 /*
  * Globals
  */
 clientInfo_t *clientArr[MAX_PLAYERS];
 int PORT;
+char MAPDIR[FILENAME_MAX];
+mapList_t *MAP_HEAD;
 
 
 void *safe_malloc(size_t size) {
@@ -118,8 +133,13 @@ void processArgs(int argc, char *argv[]) {
             i++;
             PORT = atoi(argv[i]);
         }
+        else if (strcmp(argv[i], "-m") == 0) {
+            i++;
+            strcpy(MAPDIR, argv[i]);
+        }
         else if (strcmp(argv[i], "-h") == 0) {
-            exitWithMessage("-p [PORT] if not specified 8888");
+            exitWithMessage("-p [PORT] if not specified 8888"
+                                    "-m [DIRECTORY] Directory name containing maps, default maps/");
             exit(0);
         }
     }
@@ -404,13 +424,104 @@ void *handle_connection(void *conn) {
     return 0;
 }
 
+void addMap(FILE *mapfile, char name[256]) {
+    mapList_t *map = safe_malloc(sizeof(mapList_t));
+    // Initialize map metadata
+    map->next = NULL;
+    map->active = false;
+    map->height = 0;
+    map->width = 0;
+    memset(map->map, 0, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
+    strcpy(map->filename, name);
+
+
+    if (MAP_HEAD == NULL) { // First map, point map head to it
+        MAP_HEAD = map;
+
+    } else { // Nth map, go to the end of list and append
+        mapList_t *tmp = MAP_HEAD;
+        while (tmp->next) {
+            tmp = tmp->next;
+        }
+        tmp->next = map;
+    }
+    // Reads the map data into 2D array
+    char c;
+    int x = 0;
+    int y = 0;
+    do {
+        c = getc(mapfile);
+        if (c == '\n') {
+            y++;
+            x = 0;
+        }
+        else if (c==EOF){
+            break;
+        }
+        else {
+            c = c-'0'; //The data in file are char type, but the map data should have char value of 0/1/2... not 47/48/49...
+            if (c == None || c == Dot || c == Wall || c == PowerPellet || c == Invincibility || c == Score) {
+                map->map[y][x] = c;
+                x++;
+            } else {
+                char tmp[FILENAME_MAX];
+                snprintf(tmp, FILENAME_MAX, "Incorrect character in %s (%d:%d)", map->filename, x, y);
+                exitWithMessage(tmp);
+            }
+        }
+    } while (c != EOF);
+    map->width = x;
+    map->height = y;
+
+}
+
+/**
+ * Reads maps from the MAPDIR directory into mapList struct list
+ */
+void initMaps() {
+
+    DIR *desc; //Directory descriptor
+    struct dirent *ent;
+    FILE *open_file;
+
+
+    /* Scanning the in directory */
+    if (NULL == (desc = opendir(MAPDIR))) {
+        exitWithMessage("Unable to open map directory");
+    }
+
+    while ((ent = readdir(desc))) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue; //We do not want to follow current and upper directory hard links
+
+        if (ent->d_type == DT_REG) {
+            char filepath[FILENAME_MAX];
+            snprintf(filepath, FILENAME_MAX, "%s/%s", MAPDIR, ent->d_name);
+            // Open file
+            open_file = fopen(filepath, "r");
+            if (open_file == NULL) {
+                fprintf(stderr, "Failed to open %s, skipping\n", ent->d_name);
+                fclose(open_file);
+                continue;
+            }
+            addMap(open_file, ent->d_name);
+            fclose(open_file);
+        }
+
+
+    }
+}
+
 void initVariables() {
     // Default port
     PORT = 8888;
+    // Default map directory
+    snprintf(MAPDIR, FILENAME_MAX, "maps/");
     // Initialize player array
     for (int i = 0; i < MAX_PLAYERS; i++) {
         clientArr[i] = NULL;
     }
+    MAP_HEAD = NULL;
 }
 
 
@@ -419,6 +530,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, signal_callback_handler);
     initVariables();
     processArgs(argc, argv);
+    initMaps();
     startServer();
 
 
