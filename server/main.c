@@ -34,6 +34,8 @@ void *safe_malloc(size_t);
 
 int startServer();
 
+void initPacket(char *buffer, ssize_t *bufferPointer);
+
 clientInfo_t *initClientData(int, struct in_addr);
 
 /*
@@ -41,7 +43,7 @@ clientInfo_t *initClientData(int, struct in_addr);
  * http://en.cppreference.com/w/c/language/enum
  */
 enum connectionError_t {
-    ERROR_NAME_IN_USE=-1, ERROR_SERVER_FULL=-2
+    ERROR_NAME_IN_USE = -1, ERROR_SERVER_FULL = -2
 };
 
 // Packet type enumerations
@@ -74,7 +76,7 @@ enum playerType_t {
 
 typedef struct clientInfo {
     int clientSock;
-    unsigned int id;
+    int id;
     struct in_addr ip;
     char name[20];
 } clientInfo_t;
@@ -237,16 +239,15 @@ int startServer() {
 void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
     printf("%s: %s\n", inet_ntoa(client->ip), errormsg);
     close(client->clientSock);
-    for (int i=0; i<MAX_PLAYERS; i++) {
-        if (client == clientArr[i]) clientArr[i]=NULL;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (client == clientArr[i]) clientArr[i] = NULL;
     }
     free(client);
     pthread_exit(&retval);
 }
 
 void receivePacket(char *buffer, ssize_t *bufferPointer, int sock) {
-    *bufferPointer = 0;
-    memset(buffer, 0, MAX_PACKET_SIZE);
+    initPacket(buffer, bufferPointer);
     *bufferPointer = recv(sock, buffer, MAX_PACKET_SIZE, 0);
 }
 
@@ -260,9 +261,20 @@ void sendPacket(char *buffer, ssize_t bufferPointer, int sock) {
 /**
  * Initializes empty packet and bufferPointer
  */
-void initPacket(char *buffer, ssize_t *bufferPointer){
+void initPacket(char *buffer, ssize_t *bufferPointer) {
     *bufferPointer = 0;
     memset(buffer, 0, MAX_PACKET_SIZE);
+}
+
+/*
+ * Send the passed packet to all users
+ */
+void sendMassPacket(char *buffer, ssize_t bufferPointer) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i]) {
+            sendPacket(buffer, bufferPointer, clientArr[i]->clientSock);
+        }
+    }
 }
 
 
@@ -279,7 +291,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
      *  0 - Packet type
      *  1-21 - Nickname
      */
-    bufferPointer = recv(clientInfo->clientSock, buffer, MAX_PACKET_SIZE, 0);
+    receivePacket(buffer, &bufferPointer, clientInfo->clientSock);
     if (bufferPointer == 0) {
         threadErrorHandler("Unauthenticated client disconnected", 1, clientInfo);
     }
@@ -292,7 +304,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             initPacket(buffer, &bufferPointer);
             buffer[0] = ACK;
             int errval = ERROR_NAME_IN_USE;
-            memcpy(buffer+1, &errval, sizeof(int));
+            memcpy(buffer + 1, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo->clientSock);
 
             threadErrorHandler("Name is in use", 5, clientInfo);
@@ -301,7 +313,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             initPacket(buffer, &bufferPointer);
             buffer[0] = ACK;
             int errval = ERROR_SERVER_FULL;
-            memcpy(buffer+1, &errval, sizeof(int));
+            memcpy(buffer + 1, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo->clientSock);
             threadErrorHandler("Server is full", 4, clientInfo);
         }
@@ -309,12 +321,18 @@ void processNewPlayer(clientInfo_t *clientInfo) {
         // Everything OK, sending user ID
         initPacket(buffer, &bufferPointer);
         buffer[0] = ACK;
-        memcpy(buffer+1, &clientInfo->id, sizeof(int));
-        sendPacket(buffer, 5, clientInfo->clientSock);
+        memcpy(buffer + 1, &clientInfo->id, sizeof(int));
+        sendPacket(buffer, sizeof(int) + 1, clientInfo->clientSock);
+
+        //Sending JOINED packet to everyone
+        initPacket(buffer, &bufferPointer);
+        buffer[0] = JOINED;
+        memcpy(buffer + 1, &clientInfo->id, sizeof(int)); //Player ID
+        memcpy(buffer + 1 + sizeof(int), &clientInfo->name, MAX_NICK_SIZE); //Player name
+        sendMassPacket(buffer, sizeof(int) + 1 + MAX_NICK_SIZE);
 
 
-
-        printf("New player %s(%d) from %s\n", clientInfo->name,clientInfo->id, inet_ntoa(clientInfo->ip));
+        printf("New player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
 
 
     }
