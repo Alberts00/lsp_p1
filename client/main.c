@@ -179,7 +179,7 @@ void receiveJoinResponse() {
     char response[sizeof(int) + 1] = {0};
     int responseCode;
 
-    if(recv(sock, response, sizeof(int), 0))
+    if(recv(sock, response, sizeof(int) + 1, 0))
     {
         if(response[0] != ACK) {
             exitWithMessage("Server rejected the connection. Please try again.");
