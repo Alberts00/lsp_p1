@@ -15,12 +15,18 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <signal.h>
+#include <ncurses.h>
 
 /**
  * GLOBAL VARIABLES
  */
 int sock;
-
+WINDOW *mainWindow;
+WINDOW *scoreWindow;
+WINDOW *scoreBoardWindow;
+WINDOW *chatWindow;
+WINDOW *connectionWindow;
+WINDOW *errorWindow;
 
 /**
  * ENUMS
@@ -40,6 +46,24 @@ enum connectionError_t {
 void *listenToServer(void*);
 void sendJoinRequest();
 void receiveJoinResponse();
+void sendTextNotification(char[]);
+void initCurses();
+void deleteAllWindows();
+void connectionDialog(char*, char*);
+void writeToWindow(WINDOW*, int, int, char[]);
+void windowDeleteAction(WINDOW*);
+
+
+/**
+ * Definitions
+ */
+#define WORLD_WIDTH 100
+#define WORLD_HEIGHT 40
+#define CONNECTION_WIDTH 40
+#define CONNECTION_HEIGHT 20
+#define ERROR_WIDTH 40
+#define ERROR_HEIGHT 10
+
 
 void *safe_malloc(size_t size) {
     void *p = malloc(size);
@@ -51,63 +75,76 @@ void *safe_malloc(size_t size) {
     return p;
 }
 
-/*
- * Paligfunkcija kura palidz programmai iziet kludas gadijuma
- */
 void exitWithMessage(char error[]) {
-    printf("Error %s\n", error);
+    deleteAllWindows();
+    refresh();
+    noecho();
+    curs_set(FALSE);
+    errorWindow = newwin(ERROR_HEIGHT, ERROR_WIDTH, (LINES - ERROR_HEIGHT) / 2, (COLS - ERROR_WIDTH) / 2);
+    box(errorWindow, 0, 0);
+    mvwprintw(errorWindow, ERROR_HEIGHT / 2 - 1, 3, error);
+    mvwprintw(errorWindow, (ERROR_HEIGHT / 2) + 1, 3, "Exiting in 5 seconds...");
+    wrefresh(errorWindow);
+    refresh();
+    sleep(5);
+    windowDeleteAction(errorWindow);
+    windowDeleteAction(mainWindow);
+    endwin();
     exit(EXIT_FAILURE);
 }
 
-void processArgs(int argc, char *argv[]) {
-    int i;
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-c") == 0) {
-            //TODO
-        }
-        else if (strcmp(argv[i], "-s") == 0) {
-            //TODO
-        }
-        else if (strcmp(argv[i], "-h") == 0) {
-            //TODO
-            exit(0);
-        }
-    }
+void deleteAllWindows() {
+    windowDeleteAction(scoreWindow);
+    windowDeleteAction(scoreBoardWindow);
+    windowDeleteAction(chatWindow);
+    windowDeleteAction(connectionWindow);
+}
+
+void windowDeleteAction(WINDOW *w) {
+    wborder(w, ' ', ' ', ' ',' ',' ',' ',' ',' ');
+    werase(w);
+    wrefresh(w);
+    delwin(w);
+}
+
+/**
+ * Sends notification to the user
+ */
+void sendTextNotification(char text[]) {
+    // @TODO: implement some nice notifications
+    puts(text);
+}
+
+void writeToWindow(WINDOW* window, int y, int x, char text[]) {
+    mvwprintw(window, y, x, text);
+    wrefresh(window);
 }
 
 int main(int argc, char *argv[]) {
     struct sockaddr_in server;
     char message[1000], serverReply[2000], serverAddress[16], serverPort[6];
 
+    initCurses();
+//    strcpy(serverAddress, "127.0.0.1");
+//    strcpy(serverPort, "8888");
+    connectionDialog(serverAddress, serverPort);
+
     //Create socket
     sock = socket(AF_INET , SOCK_STREAM , 0);
-    if (sock == -1)
-    {
-        printf("Could not create socket");
+    if (sock == -1) {
+        exitWithMessage("Could not create socket");
     }
-
-    strcpy(serverAddress, "127.0.0.1");
-    strcpy(serverPort, "8888");
-
-//    printf("Enter IP address to connect to: ");
-//    scanf("%s" , serverAddress);
-//    printf("Enter server port: ");
-//    scanf("%s" , serverPort);
 
     server.sin_addr.s_addr = inet_addr(serverAddress);
     server.sin_family = AF_INET;
     server.sin_port = htons(atoi(serverPort));
 
-    puts("Connecting to server...");
+    writeToWindow(connectionWindow, 7, 4, "Connecting to the server...");
 
     //Connect to remote server
-    if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0)
-    {
-        perror("Connection failed");
-        return 1;
+    if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0) {
+        exitWithMessage("Connection failed");
     }
-
-    puts("Connected to the server!");
 
     sendJoinRequest();
     receiveJoinResponse();
@@ -117,14 +154,12 @@ int main(int argc, char *argv[]) {
 
     pthread_t thread_id;
     if (pthread_create(&thread_id, NULL, listenToServer, (void *) &sock) < 0) {
-        perror("could not create thread");
-        return 1;
+        exitWithMessage("could not create thread");
     }
     pthread_join(thread_id , NULL);
 
     //keep communicating with server
-    while(1)
-    {
+    while(1) {
         scanf("%s" , message);
 
         //Send some data
@@ -149,25 +184,65 @@ int main(int argc, char *argv[]) {
 }
 
 /**
+ * Shows the connection dialog and displays initial connection info input
+ * @param adrress
+ * @param port
+ */
+void connectionDialog(char *address, char *port) {
+    int offsetX, offsetY;
+
+    // Center the window
+    offsetX = (COLS - CONNECTION_WIDTH) / 2;
+    offsetY = (LINES - CONNECTION_HEIGHT) / 2;
+
+    echo();
+    curs_set(TRUE);
+
+    connectionWindow = newwin(CONNECTION_HEIGHT, CONNECTION_WIDTH, offsetY, offsetX);
+
+    box(connectionWindow, 0, 0);
+
+
+    // @TODO: this is fucking shit but I have no idea how to make it work with mvwscanw
+
+
+    writeToWindow(connectionWindow, 0, 0, "Connect to a server ");
+    writeToWindow(connectionWindow, 2, 4, "Enter IP address to connect to: ");
+    wmove(connectionWindow, 3, 6);
+    scanf("%s", address);
+
+
+    refresh();
+//    mvwscanw(connectionWindow, 3, 6, address);
+    writeToWindow(connectionWindow, 5, 4, "Enter server port: ");
+    refresh();
+//    mvwscanw(connectionWindow, 6, 6, port);
+    wmove(connectionWindow, 6, 6);
+    scanf("%s", port);
+}
+
+/**
  * Send join request to the server
  */
 void sendJoinRequest() {
-    puts("Sending request to join...\n");
+    writeToWindow(connectionWindow, 9, 4, "Sending request to join the game");
     char name[20];
     char packet[21];
 
     memset(packet, '\0', sizeof(packet));
     memset(name, '\0', sizeof(name));
 
-    printf("Enter your name: ");
+    writeToWindow(connectionWindow, 11, 4, "Enter your name: ");
+    wmove(connectionWindow, 12, 6);
     scanf("%s", name);
+    // @TODO: this is fucking shit but I have no idea how to make it work with mvwscanw
+//    mvwscanw(connectionWindow, 12, 6, name);
 
     memset(packet, JOIN, 1);
     strcpy(packet+1, name);
 
     // Send join request packet
-    if(send(sock, packet, sizeof(packet) , 0) < 0)
-    {
+    if(send(sock, packet, sizeof(packet) , 0) < 0) {
         exitWithMessage("Join request has failed. Please check your internet connection and try again.");
     }
 }
@@ -179,8 +254,7 @@ void receiveJoinResponse() {
     char response[sizeof(int) + 1] = {0};
     int responseCode;
 
-    if(recv(sock, response, sizeof(int) + 1, 0))
-    {
+    if(recv(sock, response, sizeof(int) + 1, 0)) {
         if(response[0] != ACK) {
             exitWithMessage("Server rejected the connection. Please try again.");
         }
@@ -197,6 +271,9 @@ void receiveJoinResponse() {
         if(responseCode == ERROR_OTHER) {
             exitWithMessage("Something went wrong! Please try again later.");
         }
+
+        windowDeleteAction(connectionWindow);
+        refresh();
     }
 }
 
@@ -264,4 +341,26 @@ void *listenToServer(void *conn) {
 //    }
 //
 //    return 0;
+}
+
+/**
+ * Initialize curses
+ */
+void initCurses() {
+    int offsetX, offsetY;
+
+    initscr(); // Initialize the window
+    refresh();
+    noecho(); // Don't echo any keypresses
+    curs_set(FALSE); // Don't display a cursor
+
+    // Center the inner window
+    offsetX = (COLS - WORLD_WIDTH) / 2;
+    offsetY = (LINES - WORLD_HEIGHT) / 2;
+
+    mainWindow = newwin(WORLD_HEIGHT, WORLD_WIDTH, offsetY, offsetX);
+
+    box(mainWindow, 0, 0);
+
+    wrefresh(mainWindow);
 }

@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.3)
 project(lsp_p1)
 
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror -std=gnu11")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -lncurses")
 
 IF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")

@@ -1,1 +1,5 @@
 .idea
+cmake-build-debug
+main
+serv
+cli
