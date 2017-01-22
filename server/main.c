@@ -37,8 +37,8 @@
 #define MIN_PLAYERS 2
 #define TICK_FREQUENCY 33 //Time before ticks in miliseconds
 #define GHOST_RATIO 1
-#define PACMAN_RATIO 2
-#define SPAWNPOINT_TRAVERSAL_RANGE 5
+#define PACMAN_RATIO 1
+#define SPAWNPOINT_TRAVERSAL_RANGE 3
 
 
 typedef struct clientInfo clientInfo_t;
@@ -471,9 +471,9 @@ void sleep_ms(int milliseconds) // cross-platform sleep function
 }
 
 unsigned int getPlayerCount() {
-    int players = 0;
+    unsigned int players = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (clientArr != NULL) players++;
+        if (clientArr[i] != NULL) players++;
     }
     return players;
 }
@@ -602,6 +602,8 @@ void prepareStartPacket(char *buffer, clientInfo_t *client) {
 
     // Calculates if player should be Pacman or Ghost
     pacmanOrGhost(client);
+    buffer[2] = (char) client->x;
+    buffer[3] = (char) client->y;
 
     // Make sure that the player is alive at the start of the game
     client->playerState = NORMAL;
@@ -619,6 +621,7 @@ void *gameController(void *a) {
     while (true) {
         sleep_ms(TICK_FREQUENCY);
         if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
+            sendStartPackets();
             gameStarted = true;
             TICK += 1;
         }
