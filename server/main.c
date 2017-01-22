@@ -65,6 +65,8 @@ void *gameController(void *a);
 
 void prepareStartPacket(char *buffer, clientInfo_t *client);
 
+void sleep_ms(int milliseconds);
+
 /*
  * Enumerations
  * http://en.cppreference.com/w/c/language/enum
@@ -179,8 +181,8 @@ void processArgs(int argc, char *argv[]) {
         else if (strcmp(argv[i], "-h") == 0) {
             exitWithMessage("-p [PORT] if not specified 8888"
                                     "-m [DIRECTORY] Directory name containing maps, default maps/"
-                                    "-v Verbose debugging"
-                                    "-vv VERY verbose debugging");
+                                    "-v Verbose logging"
+                                    "-vv VERY verbose logging");
             exit(0);
         }
     }
@@ -281,7 +283,7 @@ int startServer() {
 
         clientInfo_t *currentClient = initClientData(client_sock, client.sin_addr);
 
-
+        //Launch player connection controller thread
         if (pthread_create(&thread_id, NULL, handle_connection, (void *) currentClient) < 0) {
             perror("could not create thread");
             return 1;
@@ -425,6 +427,32 @@ void processNewPlayer(clientInfo_t *clientInfo) {
 
 }
 
+
+/**
+ * Function (in a seperate thread) which updates the client with game data (MAP/PLAYERS/SCORE)
+ */
+void *playerSender(void *client) {
+    while (gameStarted){
+
+        sleep_ms(TICK_FREQUENCY);
+    }
+
+}
+
+/**
+ * Function (in a seperate thread) which receives updates from the client (MOVE/MESSAGE/QUIT(PLAYER_DISCONNECTED))
+ */
+void *playerReceiver(void *client) {
+    while (true){
+
+        sleep_ms(TICK_FREQUENCY);
+    }
+
+}
+
+/**
+ * Client connection thread which operates the open socket to the client
+ */
 void *handle_connection(void *conn) {
     // Get the socket descriptor
     clientInfo_t *clientInfo = (clientInfo_t *) conn;
@@ -441,39 +469,19 @@ void *handle_connection(void *conn) {
         if (debugLevel == DEBUG) printf("DEBUG: %s joined late, also sending START packet\n", clientInfo->name);
     }
 
-
-    //Send some messages to the client
-    /*message = "Greetings! I am your connection handler\n";
-    write(sock, message, strlen(message));
-
-    //Receive a message from client
-    while ((read_size = recv(sock, client_message, 2000, 0)) > 0) {
-        //end of string marker
-        client_message[read_size] = '\0';
-        sscanf(client_message, "name: %s", clientInfo.name);
-
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (sockets[i] > 0) {
-                snprintf(client_message,2000,"%s (ID: %d) sent: %s\n", clientInfo.name, clientInfo.id, client_message);
-                write(sockets[i], client_message, strlen(client_message));
-            }
-        }
-
-
-
-
-
-        //clear the message buffer
-        memset(client_message, 0, 2000);
+    pthread_t thread_id;
+    // Create seperate game handler threads for client
+    // First thread - sends game data to the client (MAP/PLAYERS/SCORE)
+    if (pthread_create(&thread_id, NULL, playerSender, (void *) clientInfo) < 0) {
+        threadErrorHandler("Could not create playerSender thread", 7, clientInfo);
     }
 
-    if (read_size == 0) {
-        puts("Client disconnected");
-        fflush(stdout);
+
+    // Second thread for receiving messages from client (MOVE/MESSAGE/QUIT(PLAYER_DISCONNECTED))
+    if (pthread_create(&thread_id, NULL, playerReceiver, (void *) clientInfo) < 0) {
+        threadErrorHandler("Could not create playerReceiver thread", 8, clientInfo);
     }
-    else if (read_size == -1) {
-        perror("recv failed");
-    }*/
+
 
     return 0;
 }
