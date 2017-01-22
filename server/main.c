@@ -38,7 +38,7 @@
 #define TICK_FREQUENCY 33 //Time before ticks in miliseconds
 #define GHOST_RATIO 1
 #define PACMAN_RATIO 2
-#define SPAWNPOINT_TRAVERSAL_RANGE 10
+#define SPAWNPOINT_TRAVERSAL_RANGE 5
 
 
 typedef struct clientInfo clientInfo_t;
@@ -475,6 +475,7 @@ unsigned int getPlayerCount() {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr != NULL) players++;
     }
+    return players;
 }
 
 /*
