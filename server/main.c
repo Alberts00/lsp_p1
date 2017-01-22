@@ -109,8 +109,8 @@ typedef struct clientInfo {
     enum playerType_t playerType;
     enum playerState_t playerState;
     enum clientMovement_t clientMovement;
-    unsigned int x;
-    unsigned int y;
+    float x;
+    float y;
     bool active;
 } clientInfo_t;
 
@@ -503,7 +503,7 @@ void sendStartPackets() {
         memset(buffer, 0, MAX_PACKET_SIZE);
         if (clientArr[i] != NULL) {
             prepareStartPacket(buffer, clientArr[i]);
-            sendPacket(buffer, 4, clientArr[i]);
+            sendPacket(buffer, 5, clientArr[i]);
         }
     }
 }
@@ -514,7 +514,7 @@ void sendStartPackets() {
 clientInfo_t *isSomeoneThere(int x, int y) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] != NULL) {
-            if (clientArr[i]->active && clientArr[i]->x == x && clientArr[i]->y == y) {
+            if (clientArr[i]->active && (int)clientArr[i]->x == x && (int)clientArr[i]->y == y) {
                 return clientArr[i];
             }
         }
@@ -531,17 +531,18 @@ void findStartingPosition(clientInfo_t *client) { //TODO TEST
         bool spotFound = false;
         for (int i = 0; i < rows; i++) {
             for (int j = 0; j < cols; j++) {
-                if (MAP_CURRENT->map[rows][cols] != Wall &&
-                    MAP_CURRENT->map[rows][cols] != None) { //Try to find possible spawn point
+                if (MAP_CURRENT->map[i][j] != Wall &&
+                    MAP_CURRENT->map[i][j] != None) { //Try to find possible spawn point
                     // Traverse close blocks to see if there aren't any Ghosts
                     // We need to make sure that we do not check negative array values
                     bool enemyFound = false;
-                    for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : i - SPAWNPOINT_TRAVERSAL_RANGE;
+
+                    for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? i : i - SPAWNPOINT_TRAVERSAL_RANGE;
                          ii < i + SPAWNPOINT_TRAVERSAL_RANGE && i + SPAWNPOINT_TRAVERSAL_RANGE <= rows; ii++) {
-                        for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : j - SPAWNPOINT_TRAVERSAL_RANGE;
+                        for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? j : j - SPAWNPOINT_TRAVERSAL_RANGE;
                              jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
                             clientInfo_t *contender = isSomeoneThere(jj, ii);
-                            if (contender->playerType == Ghost) {
+                            if (contender && contender->playerType == Ghost) {
                                 enemyFound = true;
                                 break;
                             }
@@ -549,8 +550,8 @@ void findStartingPosition(clientInfo_t *client) { //TODO TEST
                         if (enemyFound) break;
                     }
                     if (enemyFound == false) {
-                        client->x = (unsigned int) cols;
-                        client->y = (unsigned int) rows;
+                        client->x = (float) i;
+                        client->y = (float) j;
                         spotFound = true;
                         break;
                     }
@@ -564,19 +565,19 @@ void findStartingPosition(clientInfo_t *client) { //TODO TEST
         int rows = MAP_CURRENT->height;
         int cols = MAP_CURRENT->width;
         bool spotFound = false;
-        for (int i = rows; i <= 0; i--) {
-            for (int j = cols; j <= 0; j--) {
-                if (MAP_CURRENT->map[rows][cols] != Wall &&
-                    MAP_CURRENT->map[rows][cols] != None) { //Try to find possible spawn point
+        for (int i = rows; i >= 0; i--) {
+            for (int j = cols; j >= 0; j--) {
+                if (MAP_CURRENT->map[i][j] != Wall &&
+                    MAP_CURRENT->map[i][j] != None) { //Try to find possible spawn point
                     // Traverse close blocks to see if there aren't any Ghosts
                     // We need to make sure that we do not check negative array values
                     bool enemyFound = false;
-                    for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : i - SPAWNPOINT_TRAVERSAL_RANGE;
+                    for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? i : i - SPAWNPOINT_TRAVERSAL_RANGE;
                          ii < i + SPAWNPOINT_TRAVERSAL_RANGE && i + SPAWNPOINT_TRAVERSAL_RANGE <= rows; ii++) {
-                        for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : j - SPAWNPOINT_TRAVERSAL_RANGE;
+                        for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? j : j - SPAWNPOINT_TRAVERSAL_RANGE;
                              jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
                             clientInfo_t *contender = isSomeoneThere(jj, ii);
-                            if (contender->playerType == Pacman) {
+                            if (contender && contender->playerType == Pacman) {
                                 enemyFound = true;
                                 break;
                             }
@@ -584,8 +585,8 @@ void findStartingPosition(clientInfo_t *client) { //TODO TEST
                         if (enemyFound) break;
                     }
                     if (enemyFound == false) {
-                        client->x = (unsigned int) cols;
-                        client->y = (unsigned int) rows;
+                        client->x = (float) i;
+                        client->y = (float) j;
                         spotFound = true;
                         break;
                     }
@@ -640,8 +641,11 @@ void *gameController(void *a) {
     while (true) {
         sleep_ms(TICK_FREQUENCY);
         if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
-            if (TICK==0) sendStartPackets();
-            gameStarted = true;
+            if (TICK == 0) {
+                gameStarted = true;
+                printf("Game started, sending START packets\n");
+                sendStartPackets();
+            }
             TICK += 1;
         }
     }
