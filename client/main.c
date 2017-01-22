@@ -24,9 +24,12 @@ int sock;
 WINDOW *mainWindow;
 WINDOW *scoreWindow;
 WINDOW *scoreBoardWindow;
-WINDOW *chatWindow;
+WINDOW *notificationWindow;
 WINDOW *connectionWindow;
 WINDOW *errorWindow;
+int mapW;
+int mapH;
+int notificationCounter;
 
 /**
  * ENUMS
@@ -57,8 +60,10 @@ void deleteAllWindows();
 void connectionDialog(char*, char*);
 void writeToWindow(WINDOW*, int, int, char[]);
 void windowDeleteAction(WINDOW*);
-void waitForStartPacket(int*, int*, int*, int*);
-void drawMap(int, int, char*);
+void waitForStartPacket(int*, int*);
+void drawMap(char*);
+void createNotificationWindow();
+void epicDebug(char*);
 
 
 /**
@@ -70,7 +75,10 @@ void drawMap(int, int, char*);
 #define CONNECTION_HEIGHT 20
 #define ERROR_WIDTH 40
 #define ERROR_HEIGHT 10
-#define MAX_PACKET_SIZE 2000
+#define MAX_PACKET_SIZE 150000
+#define NOTIFICATION_HEIGHT 30
+#define NOTIFICATION_WIDTH 40
+#define NOTIFICATION_OFFSET 3
 
 void *safe_malloc(size_t size) {
     void *p = malloc(size);
@@ -103,7 +111,7 @@ void exitWithMessage(char error[]) {
 void deleteAllWindows() {
     windowDeleteAction(scoreWindow);
     windowDeleteAction(scoreBoardWindow);
-    windowDeleteAction(chatWindow);
+    windowDeleteAction(notificationWindow);
     windowDeleteAction(connectionWindow);
 }
 
@@ -129,8 +137,11 @@ void writeToWindow(WINDOW* window, int y, int x, char text[]) {
 
 int main(int argc, char *argv[]) {
     struct sockaddr_in server;
-    char message[1000], serverReply[2000], serverAddress[16], serverPort[6];
-    int mapW, mapH, startX, startY;
+    char serverAddress[16], serverPort[6];
+    int startX, startY;
+    mapW = 0;
+    mapH = 0;
+    notificationCounter = 0;
 
     initCurses();
 
@@ -180,38 +191,37 @@ int main(int argc, char *argv[]) {
 
     sendJoinRequest();
     receiveJoinResponse();
-    waitForStartPacket(&mapW, &mapH, &startX, &startY);
+    waitForStartPacket(&startX, &startY);
 
+    createNotificationWindow();
     // Start packet received, we can start listening to the server and sending our data
 
-    int currentClient;
-    currentClient = 1;
-
-    pthread_t thread_id;
-    if (pthread_create(&thread_id, NULL, listenToServer, (void *) &sock) < 0) {
-        exitWithMessage("could not create thread");
+    // Start a new thread to listen to the server
+    pthread_t threadId;
+    if (pthread_create(&threadId, NULL, listenToServer, (void *) &sock) < 0) {
+        exitWithMessage("Error: Could not create a thread");
     }
-    pthread_join(thread_id , NULL);
+    pthread_join(threadId , NULL);
 
-    //keep communicating with server
-    while(1) {
-        scanf("%s" , message);
-
-        //Send some data
-        if( send(sock , message , strlen(message) , 0) < 0)
-        {
-            puts("Send failed");
-            return 1;
-        }
-
-        //Receive a reply from the server
-        if( recv(sock , serverReply , 2000 , 0) < 0)
-        {
-            puts("recv failed");
-            break;
-        }
-        puts(serverReply);
-    }
+    // Keep communicating with server
+//    while(1) {
+//        scanf("%s" , message);
+//
+//        //Send some data
+//        if( send(sock , message , strlen(message) , 0) < 0)
+//        {
+//            puts("Send failed");
+//            return 1;
+//        }
+//
+//        //Receive a reply from the server
+//        if( recv(sock , serverReply , 2000 , 0) < 0)
+//        {
+//            puts("recv failed");
+//            break;
+//        }
+//        puts(serverReply);
+//    }
 
     close(sock);
 
@@ -256,6 +266,8 @@ void connectionDialog(char *address, char *port) {
 //    scanf("%s", port);
 
     strcpy(address, "127.0.0.1");
+//    strcpy(address, "95.68.71.51");
+//    strcpy(address, "81.198.119.38");
     strcpy(port, "8888");
 }
 
@@ -315,7 +327,7 @@ void receiveJoinResponse() {
     }
 }
 
-void waitForStartPacket(int *mapW, int *mapH, int *startX, int *startY) {
+void waitForStartPacket(int *startX, int *startY) {
     noecho();
     curs_set(FALSE);
     writeToWindow(mainWindow, 2, 3, "Connected and waiting for the game to start...");
@@ -324,14 +336,20 @@ void waitForStartPacket(int *mapW, int *mapH, int *startX, int *startY) {
     char startPacket[MAX_PACKET_SIZE];
 
     while ((readSize = recv(sock, startPacket, MAX_PACKET_SIZE, 0)) > 0) {
+        char zajebal[500] = {0};
+        sprintf(zajebal, "rcvd: %d\n", (int)startPacket[0]);
+        epicDebug(zajebal);
+
+
         waddch(mainWindow, '.');
         wrefresh(mainWindow);
 
         if(startPacket[0] == START) {
-            *mapW = (int)startPacket[1];
-            *mapH = (int)startPacket[2];
-            *startX = (int)startPacket[3];
-            *startY = (int)startPacket[4];
+            mapW = (int)startPacket[1];
+            mapH = (int)startPacket[2];
+            // @TODO: FIX
+//            *startX = (int)startPacket[3];
+//            *startY = (int)startPacket[4];
 
             break;
         }
@@ -346,29 +364,72 @@ void waitForStartPacket(int *mapW, int *mapH, int *startX, int *startY) {
     refresh();
 }
 
+/**
+ * Creates the window for notifications (chat/server messages)
+ */
+void createNotificationWindow() {
+    notificationWindow = newwin(NOTIFICATION_HEIGHT, NOTIFICATION_WIDTH, 3, NOTIFICATION_OFFSET);
+    box(notificationWindow, 0, 0);
+    scrollok(notificationWindow, TRUE);
+    writeToWindow(notificationWindow, 0, 0, "Messages ");
+    refresh();
+}
+
+/**
+ * Continuously listen to the game server and act on packets
+ *
+ * @param conn
+ * @return
+ */
 void *listenToServer(void *conn) {
-    //Get the socket descriptor
-
     int sock = *(int *) conn;
-    ssize_t read_size;
-    char *message, client_message[2000], *new_message;
+    ssize_t readSize;
+    char message[MAX_PACKET_SIZE];
+    writeToWindow(notificationWindow, ++notificationCounter, 1, "Started listening to the server");
+    FILE *f = fopen("file2.txt", "a");
+    fprintf(f, "%s\n", "WAITING???");
 
-    while ((read_size = recv(sock, client_message, 2000, 0)) > 0) {
-        //end of string marker
-        client_message[read_size] = '\0';
+    while ((readSize = recv(sock, message, MAX_PACKET_SIZE, 0)) > 0) {
+//        fprintf(f, "%s\n", "Received some shit packet");
+//        fprintf(f, "%i\n", (int)readSize);
 
-        puts(client_message);
+        int packetType = (int)message[0];
+
+
+
+        char type[500] = {0};
+
+        sprintf(type, "received packet %d", packetType);
+
+//        epicDebug(type);
+
+        writeToWindow(notificationWindow, ++notificationCounter, 0, type);
+
+        switch (packetType) {
+            case JOINED:
+//                playerJoinedEvent(message);
+                break;
+            case PLAYER_DISCONNECTED:
+//                playerDisconnectedEvent(message);
+                break;
+            case END:
+//                endGame();
+                break;
+            case MAP:
+                drawMap(message);
+            default:
+                break;
+        }
 
         //clear the message buffer
-        memset(client_message, 0, 2000);
+        memset(message, 0, MAX_PACKET_SIZE);
     }
+    fclose(f);
 
-    if (read_size == 0) {
-        puts("Server is gone :(");
-        fflush(stdout);
-    }
-    else if (read_size == -1) {
-        perror("recv failed");
+    if (readSize == 0) {
+        exitWithMessage("Server went offline");
+    } else if (readSize == -1) {
+        exitWithMessage("Failed to communicate with the server!");
     }
 
     return 0;
@@ -425,6 +486,7 @@ void initCurses() {
 
     // Center the inner window
     offsetX = (COLS - WORLD_WIDTH) / 2;
+    offsetX = offsetX + (NOTIFICATION_WIDTH - offsetX) + NOTIFICATION_OFFSET;
 
     mainWindow = newwin(WORLD_HEIGHT, WORLD_WIDTH, 0, offsetX);
 
@@ -443,7 +505,9 @@ void initCurses() {
  * @param mapW
  * @param map
  */
-void drawMap(int mapH, int mapW, char *map) {
+void drawMap(char *map) {
+    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received map from the server");
+
     for (int i = 0; i < mapH; ++i) {
         for (int j = 0; j < mapW; ++j) {
             // +1 to the positions is needed so that graphics do not overlap the world box
@@ -473,4 +537,21 @@ void drawMap(int mapH, int mapW, char *map) {
 
     wrefresh(mainWindow);
     refresh();
+}
+
+/**
+ * Fuck ncurses
+ */
+void epicDebug(char *message) {
+    FILE *f = fopen("file2.txt", "a");
+
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exitWithMessage("Fuck you, basically.");
+    }
+
+    fprintf(f, "%s\n", message);
+
+    fclose(f);
 }
