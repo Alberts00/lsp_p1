@@ -40,6 +40,11 @@ enum connectionError_t {
     ERROR_NAME_IN_USE = -1, ERROR_SERVER_FULL = -2, ERROR_OTHER = -3
 };
 
+//Map object enumerations
+enum mapObjecT_t {
+    None, Dot, Wall, PowerPellet, Invincibility, Score
+};
+
 /**
  * METHOD DECLARATIONS
  */
@@ -52,18 +57,20 @@ void deleteAllWindows();
 void connectionDialog(char*, char*);
 void writeToWindow(WINDOW*, int, int, char[]);
 void windowDeleteAction(WINDOW*);
+void waitForStartPacket(int*, int*, int*, int*);
+void drawMap(int, int, char*);
 
 
 /**
  * Definitions
  */
-#define WORLD_WIDTH 100
-#define WORLD_HEIGHT 40
+#define WORLD_WIDTH 101
+#define WORLD_HEIGHT 101
 #define CONNECTION_WIDTH 40
 #define CONNECTION_HEIGHT 20
 #define ERROR_WIDTH 40
 #define ERROR_HEIGHT 10
-
+#define MAX_PACKET_SIZE 2000
 
 void *safe_malloc(size_t size) {
     void *p = malloc(size);
@@ -123,8 +130,33 @@ void writeToWindow(WINDOW* window, int y, int x, char text[]) {
 int main(int argc, char *argv[]) {
     struct sockaddr_in server;
     char message[1000], serverReply[2000], serverAddress[16], serverPort[6];
+    int mapW, mapH, startX, startY;
 
     initCurses();
+
+    char map[15][31] =
+            {
+                    {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2},
+                    {2,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,2},
+                    {2,1,2,2,2,1,2,1,2,2,2,1,2,2,2,2,2,2,2,1,2,2,2,1,2,1,2,2,2,1,2},
+                    {2,1,2,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,5,2,1,2},
+                    {2,1,1,1,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,1,1,1,2},
+                    {2,2,2,1,2,1,1,1,2,3,2,1,1,1,1,1,1,1,1,1,2,1,2,1,1,1,2,1,2,2,2},
+                    {2,3,1,1,2,1,2,2,2,1,2,1,2,2,2,2,2,2,2,1,2,1,2,2,2,1,2,1,1,1,2},
+                    {2,1,2,2,2,1,1,1,1,1,1,1,2,0,0,0,0,0,2,1,1,1,1,1,1,1,2,2,2,1,2},
+                    {2,1,1,1,2,1,2,2,2,1,2,1,2,2,2,2,2,2,2,1,2,1,2,2,2,1,2,1,1,1,2},
+                    {2,2,2,1,2,4,1,1,2,1,2,1,1,1,1,1,1,1,1,1,2,1,2,1,1,1,2,1,2,2,2},
+                    {2,1,1,1,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,1,1,1,2},
+                    {2,1,2,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,4,1,1,1,2,1,2},
+                    {2,1,2,2,2,1,2,1,2,2,2,1,2,2,2,2,2,2,2,1,2,2,2,4,2,1,2,2,2,1,2},
+                    {2,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,2},
+                    {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2},
+            };
+
+//    drawMap(15, 31, map[0]);
+//    sleep(100);
+
+
 //    strcpy(serverAddress, "127.0.0.1");
 //    strcpy(serverPort, "8888");
     connectionDialog(serverAddress, serverPort);
@@ -148,6 +180,9 @@ int main(int argc, char *argv[]) {
 
     sendJoinRequest();
     receiveJoinResponse();
+    waitForStartPacket(&mapW, &mapH, &startX, &startY);
+
+    // Start packet received, we can start listening to the server and sending our data
 
     int currentClient;
     currentClient = 1;
@@ -209,7 +244,7 @@ void connectionDialog(char *address, char *port) {
     writeToWindow(connectionWindow, 0, 0, "Connect to a server ");
     writeToWindow(connectionWindow, 2, 4, "Enter IP address to connect to: ");
     wmove(connectionWindow, 3, 6);
-    scanf("%s", address);
+//    scanf("%s", address);
 
 
     refresh();
@@ -218,7 +253,10 @@ void connectionDialog(char *address, char *port) {
     refresh();
 //    mvwscanw(connectionWindow, 6, 6, port);
     wmove(connectionWindow, 6, 6);
-    scanf("%s", port);
+//    scanf("%s", port);
+
+    strcpy(address, "127.0.0.1");
+    strcpy(port, "8888");
 }
 
 /**
@@ -275,6 +313,37 @@ void receiveJoinResponse() {
         windowDeleteAction(connectionWindow);
         refresh();
     }
+}
+
+void waitForStartPacket(int *mapW, int *mapH, int *startX, int *startY) {
+    noecho();
+    curs_set(FALSE);
+    writeToWindow(mainWindow, 2, 3, "Connected and waiting for the game to start...");
+
+    ssize_t readSize;
+    char startPacket[MAX_PACKET_SIZE];
+
+    while ((readSize = recv(sock, startPacket, MAX_PACKET_SIZE, 0)) > 0) {
+        waddch(mainWindow, '.');
+        wrefresh(mainWindow);
+
+        if(startPacket[0] == START) {
+            *mapW = (int)startPacket[1];
+            *mapH = (int)startPacket[2];
+            *startX = (int)startPacket[3];
+            *startY = (int)startPacket[4];
+
+            break;
+        }
+
+        //clear the message buffer
+        memset(startPacket, 0, MAX_PACKET_SIZE);
+    }
+
+    werase(mainWindow);
+    box(mainWindow, 0, 0);
+    wrefresh(mainWindow);
+    refresh();
 }
 
 void *listenToServer(void *conn) {
@@ -356,11 +425,52 @@ void initCurses() {
 
     // Center the inner window
     offsetX = (COLS - WORLD_WIDTH) / 2;
-    offsetY = (LINES - WORLD_HEIGHT) / 2;
 
-    mainWindow = newwin(WORLD_HEIGHT, WORLD_WIDTH, offsetY, offsetX);
+    mainWindow = newwin(WORLD_HEIGHT, WORLD_WIDTH, 0, offsetX);
+
+    scrollok(mainWindow, TRUE);
 
     box(mainWindow, 0, 0);
 
     wrefresh(mainWindow);
+}
+
+/**
+ * Main method for static map object drawing
+ * note: map[i][j] == *((map+j)+i*mapW)
+ *
+ * @param mapH
+ * @param mapW
+ * @param map
+ */
+void drawMap(int mapH, int mapW, char *map) {
+    for (int i = 0; i < mapH; ++i) {
+        for (int j = 0; j < mapW; ++j) {
+            // +1 to the positions is needed so that graphics do not overlap the world box
+            int blockType = (int)*((map+j)+i*mapW);
+
+            switch (blockType) {
+                case Wall:
+                    mvwaddch(mainWindow, i+1, j+1, 97 | A_ALTCHARSET);
+                    break;
+                case Dot:
+                    mvwaddch(mainWindow, i+1, j+1, '.');
+                    break;
+                case PowerPellet:
+                    mvwaddch(mainWindow, i+1, j+1, ACS_DIAMOND);
+                    break;
+                case Invincibility:
+                    mvwaddch(mainWindow, i+1, j+1, 164 | A_ALTCHARSET);
+                    break;
+                case Score:
+                    mvwaddch(mainWindow, i+1, j+1, ACS_PLUS);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    wrefresh(mainWindow);
+    refresh();
 }
