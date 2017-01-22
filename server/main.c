@@ -18,12 +18,27 @@
 #include <stdbool.h>
 #include <dirent.h>
 
+#ifdef WIN32
+#include <windows.h>
+#elif _POSIX_C_SOURCE >= 199309L
+
+#include <time.h>   // for nanosleep
+
+#else
+#include <unistd.h> // for usleep
+#endif
+
 #define MAX_PLAYERS 16
 #define MAX_PACKET_SIZE 1472
 #define PACKET_TYPE_SIZE 1
 #define MAX_NICK_SIZE 20
 #define MAX_MAP_HEIGHT 100
 #define MAX_MAP_WIDTH 100
+#define MIN_PLAYERS 2
+#define TICK_FREQUENCY 33 //Time before ticks in miliseconds
+#define GHOST_RATIO 1
+#define PACMAN_RATIO 2
+#define SPAWNPOINT_TRAVERSAL_RANGE 10
 
 
 typedef struct clientInfo clientInfo_t;
@@ -45,6 +60,10 @@ void sendMassPacket(char *buffer, ssize_t bufferPointer);
 clientInfo_t *initClientData(int, struct in_addr);
 
 void sendPlayerDisconnect(clientInfo_t *client);
+
+void *gameController(void *a);
+
+void prepareStartPacket(char *buffer, clientInfo_t *client);
 
 /*
  * Enumerations
@@ -87,6 +106,11 @@ typedef struct clientInfo {
     int id;
     struct in_addr ip;
     char name[20];
+    enum playerType_t playerType;
+    enum playerState_t playerState;
+    enum clientMovement_t clientMovement;
+    unsigned int x;
+    unsigned int y;
 } clientInfo_t;
 
 
@@ -107,6 +131,8 @@ clientInfo_t *clientArr[MAX_PLAYERS];
 int PORT;
 char MAPDIR[FILENAME_MAX];
 mapList_t *MAP_HEAD;
+bool gameStarted;
+mapList_t *MAP_CURRENT;
 
 
 void *safe_malloc(size_t size) {
@@ -226,6 +252,12 @@ int startServer() {
     printf("Waiting for incoming connections on port %d\n", PORT);
     c = sizeof(struct sockaddr_in);
     pthread_t thread_id;
+
+    /* Launch game controller thread */
+    if (pthread_create(&thread_id, NULL, gameController, NULL) < 0) {
+        perror("could not create thread");
+        return 1;
+    }
 
 
     while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
@@ -424,6 +456,175 @@ void *handle_connection(void *conn) {
     return 0;
 }
 
+void sleep_ms(int milliseconds) // cross-platform sleep function
+{
+#ifdef WIN32
+    Sleep(milliseconds);
+#elif _POSIX_C_SOURCE >= 199309L
+    struct timespec ts;
+    ts.tv_sec = milliseconds / 1000;
+    ts.tv_nsec = (milliseconds % 1000) * 1000000;
+    nanosleep(&ts, NULL);
+#else
+    usleep(milliseconds * 1000);
+#endif
+}
+
+unsigned int getPlayerCount() {
+    int players = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr != NULL) players++;
+    }
+}
+
+/*
+ * Sends game start packet to all clients
+ */
+void sendStartPackets() {
+    char buffer[MAX_PACKET_SIZE];
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        memset(buffer, 0, MAX_PACKET_SIZE);
+        if (clientArr[i] == NULL) {
+            prepareStartPacket(buffer, clientArr[i]);
+            sendPacket(buffer, 4, clientArr[i]);
+        }
+    }
+}
+
+/**
+ * Checks if there is anyone at the given coordinates, returns the client, else NULL
+ */
+clientInfo_t *isSomeoneThere(int x, int y) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] != NULL) {
+            if (clientArr[i]->x == x && clientArr[i]->y == y) {
+                return clientArr[i];
+            }
+        }
+    }
+    return NULL;
+}
+
+
+void findStartingPosition(clientInfo_t *client) { //TODO TEST
+
+    if (client->playerType == Pacman) { // If Pacman start search in the upper left corner
+        int rows = MAP_CURRENT->height;
+        int cols = MAP_CURRENT->width;
+        bool spotFound = false;
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                if (MAP_CURRENT->map[rows][cols] != Wall &&
+                    MAP_CURRENT->map[rows][cols] != None) { //Try to find possible spawn point
+                    // Traverse close blocks to see if there aren't any Ghosts
+                    // We need to make sure that we do not check negative array values
+                    bool enemyFound = false;
+                    for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : i - SPAWNPOINT_TRAVERSAL_RANGE;
+                         ii < i + SPAWNPOINT_TRAVERSAL_RANGE && i + SPAWNPOINT_TRAVERSAL_RANGE <= rows; ii++) {
+                        for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : j - SPAWNPOINT_TRAVERSAL_RANGE;
+                             jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
+                            clientInfo_t *contender = isSomeoneThere(jj, ii);
+                            if (contender->playerType == Ghost) {
+                                enemyFound = true;
+                                break;
+                            }
+                        }
+                        if (enemyFound) break;
+                    }
+                    if (enemyFound == false) {
+                        client->x = (unsigned int) cols;
+                        client->y = (unsigned int) rows;
+                        spotFound = true;
+                        break;
+                    }
+                }
+                if (spotFound) break;
+            }
+            if (spotFound) break;
+        }
+    }
+    else if (client->playerType == Ghost) { // If Ghost start search in lower right corner
+        int rows = MAP_CURRENT->height;
+        int cols = MAP_CURRENT->width;
+        bool spotFound = false;
+        for (int i = rows; i <= 0; i--) {
+            for (int j = cols; j <= 0; j--) {
+                if (MAP_CURRENT->map[rows][cols] != Wall &&
+                    MAP_CURRENT->map[rows][cols] != None) { //Try to find possible spawn point
+                    // Traverse close blocks to see if there aren't any Ghosts
+                    // We need to make sure that we do not check negative array values
+                    bool enemyFound = false;
+                    for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : i - SPAWNPOINT_TRAVERSAL_RANGE;
+                         ii < i + SPAWNPOINT_TRAVERSAL_RANGE && i + SPAWNPOINT_TRAVERSAL_RANGE <= rows; ii++) {
+                        for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? 0 : j - SPAWNPOINT_TRAVERSAL_RANGE;
+                             jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
+                            clientInfo_t *contender = isSomeoneThere(jj, ii);
+                            if (contender->playerType == Pacman) {
+                                enemyFound = true;
+                                break;
+                            }
+                        }
+                        if (enemyFound) break;
+                    }
+                    if (enemyFound == false) {
+                        client->x = (unsigned int) cols;
+                        client->y = (unsigned int) rows;
+                        spotFound = true;
+                        break;
+                    }
+                }
+                if (spotFound) break;
+            }
+            if (spotFound) break;
+        }
+    }
+}
+
+/*
+ * Decides if the player should be Pacman or Ghost
+ */
+void pacmanOrGhost(clientInfo_t *client) {
+    unsigned int state = getPlayerCount() % (GHOST_RATIO + PACMAN_RATIO); //TODO TEST
+    if (state <= GHOST_RATIO) client->playerType = Ghost;
+    if (state > GHOST_RATIO && state <= PACMAN_RATIO) client->playerType = Pacman;
+}
+
+/*
+ * Prepares start packet for specific client
+ */
+void prepareStartPacket(char *buffer, clientInfo_t *client) {
+    // Prepares map data for client
+    // Map width
+    buffer[0] = (char) MAP_CURRENT->width;
+    // Map height
+    buffer[1] = (char) MAP_CURRENT->height;
+
+    // Calculates if player should be Pacman or Ghost
+    pacmanOrGhost(client);
+
+    // Make sure that the player is alive at the start of the game
+    client->playerState = NORMAL;
+
+    // Finds suitable starting position for client
+    findStartingPosition(client);
+}
+
+
+void *gameController(void *a) {
+    printf("Game controller started\n");
+    MAP_CURRENT = MAP_HEAD;
+    unsigned long int TICK = 0;
+    gameStarted = false;
+    while (true) {
+        sleep_ms(TICK_FREQUENCY);
+        if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
+            gameStarted = true;
+            TICK += 1;
+        }
+    }
+}
+
+
 void addMap(FILE *mapfile, char name[256]) {
     mapList_t *map = safe_malloc(sizeof(mapList_t));
     // Initialize map metadata
@@ -455,11 +656,12 @@ void addMap(FILE *mapfile, char name[256]) {
             y++;
             x = 0;
         }
-        else if (c==EOF){
+        else if (c == EOF) {
             break;
         }
         else {
-            c = c-'0'; //The data in file are char type, but the map data should have char value of 0/1/2... not 47/48/49...
+            c = c -
+                '0'; //The data in file are char type, but the map data should have char value of 0/1/2... not 47/48/49...
             if (c == None || c == Dot || c == Wall || c == PowerPellet || c == Invincibility || c == Score) {
                 map->map[y][x] = c;
                 x++;
@@ -507,8 +709,9 @@ void initMaps() {
             addMap(open_file, ent->d_name);
             fclose(open_file);
         }
-
-
+    }
+    if (MAP_HEAD == NULL) {
+        exitWithMessage("No maps loaded");
     }
 }
 
@@ -517,11 +720,13 @@ void initVariables() {
     PORT = 8888;
     // Default map directory
     snprintf(MAPDIR, FILENAME_MAX, "maps/");
+
     // Initialize player array
     for (int i = 0; i < MAX_PLAYERS; i++) {
         clientArr[i] = NULL;
     }
     MAP_HEAD = NULL;
+    gameStarted = false;
 }
 
 
