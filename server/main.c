@@ -111,6 +111,7 @@ typedef struct clientInfo {
     enum clientMovement_t clientMovement;
     unsigned int x;
     unsigned int y;
+    bool active;
 } clientInfo_t;
 
 
@@ -217,6 +218,7 @@ clientInfo_t *initClientData(int sock, struct in_addr ip) {
     client->id = CLIENT_ID_ITERATOR++;
     client->sock = sock;
     client->ip = ip;
+    client->active = false;
     return client;
 }
 
@@ -470,10 +472,24 @@ void sleep_ms(int milliseconds) // cross-platform sleep function
 #endif
 }
 
+/**
+ * Returns count of all connected players, including those which game specific variables HAVEN'T been initialized
+ */
 unsigned int getPlayerCount() {
     unsigned int players = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] != NULL) players++;
+    }
+    return players;
+}
+
+/**
+ * Returns count of players which game specific variables have been initialized
+ */
+unsigned int getActivePlayerCount() {
+    unsigned int players = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] != NULL && clientArr[i]->active) players++;
     }
     return players;
 }
@@ -485,7 +501,7 @@ void sendStartPackets() {
     char buffer[MAX_PACKET_SIZE];
     for (int i = 0; i < MAX_PLAYERS; i++) {
         memset(buffer, 0, MAX_PACKET_SIZE);
-        if (clientArr[i] == NULL) {
+        if (clientArr[i] != NULL) {
             prepareStartPacket(buffer, clientArr[i]);
             sendPacket(buffer, 4, clientArr[i]);
         }
@@ -498,7 +514,7 @@ void sendStartPackets() {
 clientInfo_t *isSomeoneThere(int x, int y) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] != NULL) {
-            if (clientArr[i]->x == x && clientArr[i]->y == y) {
+            if (clientArr[i]->active && clientArr[i]->x == x && clientArr[i]->y == y) {
                 return clientArr[i];
             }
         }
@@ -585,31 +601,34 @@ void findStartingPosition(clientInfo_t *client) { //TODO TEST
  * Decides if the player should be Pacman or Ghost
  */
 void pacmanOrGhost(clientInfo_t *client) {
-    unsigned int state = getPlayerCount() % (GHOST_RATIO + PACMAN_RATIO); //TODO TEST
-    if (state <= GHOST_RATIO) client->playerType = Ghost;
-    if (state > GHOST_RATIO && state <= PACMAN_RATIO) client->playerType = Pacman;
+    unsigned int state = getActivePlayerCount() % (GHOST_RATIO + PACMAN_RATIO); //TODO TEST
+    if (state < GHOST_RATIO) client->playerType = Ghost;
+    if (state >= GHOST_RATIO) client->playerType = Pacman;
 }
 
 /*
  * Prepares start packet for specific client
  */
 void prepareStartPacket(char *buffer, clientInfo_t *client) {
+    buffer[0] = START;
     // Prepares map data for client
     // Map width
-    buffer[0] = (char) MAP_CURRENT->width;
+    buffer[1] = (char) MAP_CURRENT->width;
     // Map height
-    buffer[1] = (char) MAP_CURRENT->height;
+    buffer[2] = (char) MAP_CURRENT->height;
 
     // Calculates if player should be Pacman or Ghost
     pacmanOrGhost(client);
-    buffer[2] = (char) client->x;
-    buffer[3] = (char) client->y;
 
     // Make sure that the player is alive at the start of the game
     client->playerState = NORMAL;
+    client->active = true;
 
     // Finds suitable starting position for client
     findStartingPosition(client);
+
+    buffer[3] = (char) client->x;
+    buffer[4] = (char) client->y;
 }
 
 
@@ -621,7 +640,7 @@ void *gameController(void *a) {
     while (true) {
         sleep_ms(TICK_FREQUENCY);
         if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
-            sendStartPackets();
+            if (TICK==0) sendStartPackets();
             gameStarted = true;
             TICK += 1;
         }
