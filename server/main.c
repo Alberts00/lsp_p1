@@ -97,6 +97,11 @@ enum playerType_t {
     Pacman, Ghost
 };
 
+//Debug level enumerations
+enum debugLevel_t {
+    INFO, VERBOSE, DEBUG
+};
+
 /*
  * Structs
  */
@@ -128,12 +133,13 @@ typedef struct mapList {
 /*
  * Globals
  */
-clientInfo_t *clientArr[MAX_PLAYERS];
-int PORT;
-char MAPDIR[FILENAME_MAX];
-mapList_t *MAP_HEAD;
-bool gameStarted;
-mapList_t *MAP_CURRENT;
+clientInfo_t *clientArr[MAX_PLAYERS];   // Array holding all player data
+int PORT;                               // Server port
+char MAPDIR[FILENAME_MAX];              // Directory containing maps
+mapList_t *MAP_HEAD;                    // Pointer to the first MAP
+bool gameStarted;                       // True if the game is in progress
+mapList_t *MAP_CURRENT;                 // Pointer to the current loaded MAP
+enum debugLevel_t debugLevel;
 
 
 void *safe_malloc(size_t size) {
@@ -164,9 +170,17 @@ void processArgs(int argc, char *argv[]) {
             i++;
             strcpy(MAPDIR, argv[i]);
         }
+        else if (strcmp(argv[i], "-v") == 0) {
+            debugLevel = VERBOSE;
+        }
+        else if (strcmp(argv[i], "-vv") == 0) {
+            debugLevel = DEBUG;
+        }
         else if (strcmp(argv[i], "-h") == 0) {
             exitWithMessage("-p [PORT] if not specified 8888"
-                                    "-m [DIRECTORY] Directory name containing maps, default maps/");
+                                    "-m [DIRECTORY] Directory name containing maps, default maps/"
+                                    "-v Verbose debugging"
+                                    "-vv VERY verbose debugging");
             exit(0);
         }
     }
@@ -233,7 +247,7 @@ int startServer() {
     int optval = 1;
     setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
     if (socket_desc == -1 || optval == -1) {
-        printf("Unable to create a socket");
+        exitWithMessage("Unable to create a socket");
     }
 
     server.sin_family = AF_INET;
@@ -242,7 +256,7 @@ int startServer() {
 
     //Binds TCP
     if (bind(socket_desc, (struct sockaddr *) &server, sizeof(server)) < 0) {
-        printf("Unable to bind");
+        exitWithMessage("Unable to bind server");
         return 1;
     }
 
@@ -251,7 +265,7 @@ int startServer() {
 
 
     //Accept and incoming connection
-    printf("Waiting for incoming connections on port %d\n", PORT);
+    if (debugLevel == INFO) printf("INFO: Waiting for incoming connections on port %d\n", PORT);
     c = sizeof(struct sockaddr_in);
     pthread_t thread_id;
 
@@ -263,7 +277,7 @@ int startServer() {
 
 
     while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
-        printf("Connection accepted from %s \n", inet_ntoa(client.sin_addr));
+        printf("INFO: Connection accepted from %s \n", inet_ntoa(client.sin_addr));
 
         clientInfo_t *currentClient = initClientData(client_sock, client.sin_addr);
 
@@ -275,7 +289,6 @@ int startServer() {
 
         //Now join the thread , so that we dont terminate before the thread
         //pthread_join( thread_id , NULL);
-        puts("Handler assigned");
     }
 
     if (client_sock < 0) {
@@ -362,10 +375,10 @@ void processNewPlayer(clientInfo_t *clientInfo) {
      */
     receivePacket(buffer, &bufferPointer, clientInfo->sock);
     if (bufferPointer == 0) {
-        threadErrorHandler("Unauthenticated client disconnected", 1, clientInfo);
+        threadErrorHandler("INFO: Unauthenticated client disconnected", 1, clientInfo);
     }
     else if (bufferPointer == -1) {
-        threadErrorHandler("Recv failed", 2, clientInfo);
+        threadErrorHandler("INFO: Recv failed", 2, clientInfo);
     }
     if ((int) buffer[0] == JOIN) {
         memcpy(clientInfo->name, buffer + PACKET_TYPE_SIZE, MAX_NICK_SIZE);
@@ -376,7 +389,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             memcpy(buffer + PACKET_TYPE_SIZE, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo);
 
-            threadErrorHandler("Name is in use", 5, clientInfo);
+            threadErrorHandler("INFO: Name is in use", 5, clientInfo);
         }
         if (findClientSpot(clientInfo) == NULL) {
             initPacket(buffer, &bufferPointer);
@@ -384,7 +397,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             int errval = ERROR_SERVER_FULL;
             memcpy(buffer + PACKET_TYPE_SIZE, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo);
-            threadErrorHandler("Server is full", 4, clientInfo);
+            threadErrorHandler("INFO: Server is full", 4, clientInfo);
         }
 
         // Everything OK, sending user ID
@@ -401,7 +414,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
         sendMassPacket(buffer, sizeof(int) + PACKET_TYPE_SIZE + MAX_NICK_SIZE);
 
 
-        printf("New player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
+        printf("INFO: New player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
 
 
     }
@@ -425,7 +438,7 @@ void *handle_connection(void *conn) {
         char buffer[MAX_PACKET_SIZE] = {0};
         prepareStartPacket(buffer, clientInfo);
         sendPacket(buffer, 5, clientInfo);
-        printf("%s joined late, also sending START packet\n", clientInfo->name);
+        if (debugLevel == DEBUG) printf("DEBUG: %s joined late, also sending START packet\n", clientInfo->name);
     }
 
 
@@ -510,6 +523,7 @@ void sendStartPackets() {
         memset(buffer, 0, MAX_PACKET_SIZE);
         if (clientArr[i] != NULL) {
             prepareStartPacket(buffer, clientArr[i]);
+            if (debugLevel == DEBUG) printf("DEBUG: Sending START packet to %s\n", clientArr[i]->name);
             sendPacket(buffer, 5, clientArr[i]);
         }
     }
@@ -530,7 +544,7 @@ clientInfo_t *isSomeoneThere(int x, int y) {
 }
 
 
-void findStartingPosition(clientInfo_t *client) { //TODO TEST
+void findStartingPosition(clientInfo_t *client) {
 
     if (client->playerType == Pacman) { // If Pacman start search in the upper left corner
         int rows = MAP_CURRENT->height;
@@ -603,15 +617,23 @@ void findStartingPosition(clientInfo_t *client) { //TODO TEST
             if (spotFound) break;
         }
     }
+    if (debugLevel == DEBUG)
+        printf("DEBUG: %s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
 }
 
 /*
  * Decides if the player should be Pacman or Ghost
  */
 void pacmanOrGhost(clientInfo_t *client) {
-    unsigned int state = getActivePlayerCount() % (GHOST_RATIO + PACMAN_RATIO); //TODO TEST
-    if (state < GHOST_RATIO) client->playerType = Ghost;
-    if (state >= GHOST_RATIO) client->playerType = Pacman;
+    unsigned int state = getActivePlayerCount() % (GHOST_RATIO + PACMAN_RATIO);
+    if (state < GHOST_RATIO) {
+        client->playerType = Ghost;
+        if (debugLevel == DEBUG) printf("DEBUG: %s will be a GHOST \n", client->name);
+    }
+    if (state >= GHOST_RATIO) {
+        client->playerType = Pacman;
+        if (debugLevel == DEBUG) printf("DEBUG: %s will be a PACMAN \n", client->name);
+    }
 }
 
 /*
@@ -641,7 +663,7 @@ void prepareStartPacket(char *buffer, clientInfo_t *client) {
 
 
 void *gameController(void *a) {
-    printf("Game controller started\n");
+    printf("INFO: Game controller started\n");
     MAP_CURRENT = MAP_HEAD;
     unsigned long int TICK = 0;
     gameStarted = false;
@@ -650,11 +672,11 @@ void *gameController(void *a) {
         if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
             if (TICK == 0) {
                 gameStarted = true;
-                printf("Game started, sending START packets\n");
+                if (debugLevel == DEBUG) printf("DEBUG: Game started, sending START packets\n");
                 sendStartPackets();
             }
             TICK += 1;
-            printf("TICK: %lu\n", TICK);
+            if (debugLevel == DEBUG) printf("DEBUG: TICK %lu\n", TICK);
         }
     }
 }
@@ -684,7 +706,7 @@ void addMap(FILE *mapfile, char name[256]) {
     // Reads the map data into 2D array
     char c;
     int x = 0;
-    int y = 0;
+    int y = 1;
     do {
         c = getc(mapfile);
         if (c == '\n') {
@@ -709,6 +731,7 @@ void addMap(FILE *mapfile, char name[256]) {
     } while (c != EOF);
     map->width = x;
     map->height = y;
+    if (debugLevel == DEBUG) printf("DEBUG: Map %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
 
 }
 
@@ -737,7 +760,7 @@ void initMaps() {
             // Open file
             open_file = fopen(filepath, "r");
             if (open_file == NULL) {
-                fprintf(stderr, "Failed to open %s, skipping\n", ent->d_name);
+                fprintf(stderr, "INFO: Failed to open %s, skipping\n", ent->d_name);
                 fclose(open_file);
                 continue;
             }
