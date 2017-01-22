@@ -413,13 +413,19 @@ void processNewPlayer(clientInfo_t *clientInfo) {
 }
 
 void *handle_connection(void *conn) {
-    //Get the socket descriptor
+    // Get the socket descriptor
     clientInfo_t *clientInfo = (clientInfo_t *) conn;
     int sock = clientInfo->sock;
 
-    //New client connection
+    // New client connection
     processNewPlayer(clientInfo);
 
+    // If the game had already started we have to send the START packet also
+    if (gameStarted) {
+        char buffer[MAX_PACKET_SIZE] = {0};
+        prepareStartPacket(buffer, clientInfo);
+        sendPacket(buffer, 5, clientInfo);
+    }
 
 
     //Send some messages to the client
@@ -514,7 +520,7 @@ void sendStartPackets() {
 clientInfo_t *isSomeoneThere(int x, int y) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] != NULL) {
-            if (clientArr[i]->active && (int)clientArr[i]->x == x && (int)clientArr[i]->y == y) {
+            if (clientArr[i]->active && (int) clientArr[i]->x == x && (int) clientArr[i]->y == y) {
                 return clientArr[i];
             }
         }
