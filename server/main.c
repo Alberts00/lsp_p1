@@ -35,7 +35,7 @@
 #define MAX_MAP_HEIGHT 100
 #define MAX_MAP_WIDTH 100
 #define MIN_PLAYERS 2
-#define TICK_FREQUENCY 33 //Time before ticks in miliseconds
+#define TICK_FREQUENCY 1000 //Time between ticks in miliseconds
 #define GHOST_RATIO 1
 #define PACMAN_RATIO 1
 #define SPAWNPOINT_TRAVERSAL_RANGE 3
@@ -420,11 +420,12 @@ void *handle_connection(void *conn) {
     // New client connection
     processNewPlayer(clientInfo);
 
-    // If the game had already started we have to send the START packet also
-    if (gameStarted) {
+    // If the game had already started and the player was not processed during start we have to also send the START packet
+    if (gameStarted && !clientInfo->active) {
         char buffer[MAX_PACKET_SIZE] = {0};
         prepareStartPacket(buffer, clientInfo);
         sendPacket(buffer, 5, clientInfo);
+        printf("%s joined late, also sending START packet\n", clientInfo->name);
     }
 
 
@@ -653,6 +654,7 @@ void *gameController(void *a) {
                 sendStartPackets();
             }
             TICK += 1;
+            printf("TICK: %lu\n", TICK);
         }
     }
 }
