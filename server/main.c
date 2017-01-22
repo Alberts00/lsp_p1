@@ -118,6 +118,7 @@ typedef struct clientInfo {
     enum clientMovement_t clientMovement;
     float x;
     float y;
+    int score;
     bool active;
 } clientInfo_t;
 
@@ -127,7 +128,7 @@ typedef struct mapList {
     int width;     //x
     int height;    //y
     bool active;
-    char map[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+    char map[MAX_MAP_WIDTH][MAX_MAP_HEIGHT];
     struct mapList *next;
 } mapList_t;
 
@@ -167,18 +168,14 @@ void processArgs(int argc, char *argv[]) {
         if (strcmp(argv[i], "-p") == 0) {
             i++;
             PORT = atoi(argv[i]);
-        }
-        else if (strcmp(argv[i], "-m") == 0) {
+        } else if (strcmp(argv[i], "-m") == 0) {
             i++;
             strcpy(MAPDIR, argv[i]);
-        }
-        else if (strcmp(argv[i], "-v") == 0) {
+        } else if (strcmp(argv[i], "-v") == 0) {
             debugLevel = VERBOSE;
-        }
-        else if (strcmp(argv[i], "-vv") == 0) {
+        } else if (strcmp(argv[i], "-vv") == 0) {
             debugLevel = DEBUG;
-        }
-        else if (strcmp(argv[i], "-h") == 0) {
+        } else if (strcmp(argv[i], "-h") == 0) {
             exitWithMessage("-p [PORT] if not specified 8888"
                                     "-m [DIRECTORY] Directory name containing maps, default maps/"
                                     "-v Verbose logging"
@@ -378,8 +375,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
     receivePacket(buffer, &bufferPointer, clientInfo->sock);
     if (bufferPointer == 0) {
         threadErrorHandler("INFO: Unauthenticated client disconnected", 1, clientInfo);
-    }
-    else if (bufferPointer == -1) {
+    } else if (bufferPointer == -1) {
         threadErrorHandler("INFO: Recv failed", 2, clientInfo);
     }
     if ((int) buffer[0] == JOIN) {
@@ -419,8 +415,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
         printf("INFO: New player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
 
 
-    }
-    else {
+    } else {
         threadErrorHandler("Incorrect command received", 3, clientInfo);
     }
 
@@ -432,10 +427,78 @@ void processNewPlayer(clientInfo_t *clientInfo) {
  * Function (in a seperate thread) which updates the client with game data (MAP/PLAYERS/SCORE)
  */
 void *playerSender(void *client) {
-    while (gameStarted){
+    while (gameStarted) {
+        // Prepare MAP packet
+        /*
+         * 0 - PACKET TYPE
+         * 1- height*width+1 Map data
+         * Map data doesn't require map size since it is previously sent in the START packet
+         */
+        char buffer[MAX_MAP_HEIGHT * MAX_MAP_WIDTH + PACKET_TYPE_SIZE];
+        buffer[0] = MAP;
+        int bufferPointer = 1;
+        for (int i = 0; i < MAP_CURRENT->height; i++) {
+            for (int j = 0; j < MAP_CURRENT->width; j++) {
+                buffer[bufferPointer] = MAP_CURRENT->map[i][j];
+                bufferPointer++;
+            }
+        }
+        sendPacket(buffer, bufferPointer, client);
+        // Prepare PLAYERS packet
+        /*
+         * 0 - PACKET TYPE
+         * 1-4 OBJECT COUNT
+         * 5-19..19-33... Player information for each player 14 bytes(int(4)+float(4)+float(4)+PlayerState(1)+PlayerType(1))
+         */
+
+        memset(buffer, 0, MAX_PACKET_SIZE);
+        buffer[0] = PLAYERS;
+        int objectCount = 0; //Amount of player objects
+        bufferPointer = 5; //Start of the player information in buffer
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (clientArr[i] && clientArr[i]->active) {
+                memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player ID
+                bufferPointer += sizeof(int);
+                memcpy(buffer + bufferPointer, &clientArr[i]->x, sizeof(float)); //Player x coordinates
+                bufferPointer += sizeof(float);
+                memcpy(buffer + bufferPointer, &clientArr[i]->y, sizeof(float)); //Player y coordinates
+                bufferPointer += sizeof(float);
+                buffer[bufferPointer++] = clientArr[i]->playerState;
+                buffer[bufferPointer++] = clientArr[i]->playerType;
+                objectCount++;
+            }
+        }
+        memcpy(buffer + 1, &objectCount, sizeof(int));
+        sendPacket(buffer, bufferPointer, client);
+
+        // Prepare score packet
+        /*
+         * 0 - Packet type
+         * 1 - 4 Object count
+         * 5 - 8 Player score
+         * 9 - 12 Player ID
+         * Repeat player score and player ID for each player
+         */
+        objectCount = 0;
+        memset(buffer, 0, MAX_PACKET_SIZE);
+        buffer[0] = SCORE;
+        bufferPointer = 5;
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (clientArr[i] && clientArr[i]->active) {
+                memcpy(buffer + bufferPointer, &clientArr[i]->score, sizeof(int)); //Player score
+                bufferPointer += sizeof(int);
+                memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player score
+                bufferPointer += sizeof(int);
+            }
+        }
+        memcpy(buffer + 1, &objectCount, sizeof(int));
+        sendPacket(buffer, bufferPointer, client);
+
 
         sleep_ms(TICK_FREQUENCY);
+
     }
+    return 0;
 
 }
 
@@ -443,11 +506,11 @@ void *playerSender(void *client) {
  * Function (in a seperate thread) which receives updates from the client (MOVE/MESSAGE/QUIT(PLAYER_DISCONNECTED))
  */
 void *playerReceiver(void *client) {
-    while (true){
+    while (true) {
 
         sleep_ms(TICK_FREQUENCY);
     }
-
+    return 0;
 }
 
 /**
@@ -589,8 +652,7 @@ void findStartingPosition(clientInfo_t *client) {
             }
             if (spotFound) break;
         }
-    }
-    else if (client->playerType == Ghost) { // If Ghost start search in lower right corner
+    } else if (client->playerType == Ghost) { // If Ghost start search in lower right corner
         int rows = MAP_CURRENT->height;
         int cols = MAP_CURRENT->width;
         bool spotFound = false;
@@ -689,7 +751,6 @@ void *gameController(void *a) {
     }
 }
 
-
 void addMap(FILE *mapfile, char name[256]) {
     mapList_t *map = safe_malloc(sizeof(mapList_t));
     // Initialize map metadata
@@ -720,11 +781,9 @@ void addMap(FILE *mapfile, char name[256]) {
         if (c == '\n') {
             y++;
             x = 0;
-        }
-        else if (c == EOF) {
+        } else if (c == EOF) {
             break;
-        }
-        else {
+        } else {
             c = c -
                 '0'; //The data in file are char type, but the map data should have char value of 0/1/2... not 47/48/49...
             if (c == None || c == Dot || c == Wall || c == PowerPellet || c == Invincibility || c == Score) {
