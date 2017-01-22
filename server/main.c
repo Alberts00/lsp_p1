@@ -55,7 +55,7 @@ int startServer();
 
 void initPacket(char *buffer, ssize_t *bufferPointer);
 
-void sendMassPacket(char *buffer, ssize_t bufferPointer);
+void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client);
 
 clientInfo_t *initClientData(int, struct in_addr);
 
@@ -66,6 +66,8 @@ void *gameController(void *a);
 void prepareStartPacket(char *buffer, clientInfo_t *client);
 
 void sleep_ms(int milliseconds);
+
+unsigned int getPlayerCount();
 
 /*
  * Enumerations
@@ -101,7 +103,7 @@ enum playerType_t {
 
 //Debug level enumerations
 enum debugLevel_t {
-    INFO, VERBOSE, DEBUG
+    INFO, VERBOSE, DEBUG, DEBUGMAX
 };
 
 /*
@@ -157,7 +159,7 @@ void *safe_malloc(size_t size) {
 
 
 void exitWithMessage(char error[]) {
-    printf("Error %s\n", error);
+    printf("%s\n", error);
     exit(EXIT_FAILURE);
 }
 
@@ -176,11 +178,10 @@ void processArgs(int argc, char *argv[]) {
         } else if (strcmp(argv[i], "-vv") == 0) {
             debugLevel = DEBUG;
         } else if (strcmp(argv[i], "-h") == 0) {
-            exitWithMessage("-p [PORT] if not specified 8888"
-                                    "-m [DIRECTORY] Directory name containing maps, default maps/"
-                                    "-v Verbose logging"
-                                    "-vv VERY verbose logging");
-            exit(0);
+            exitWithMessage("-p [PORT] if not specified 8888\n"
+                                    "-m [DIRECTORY] Directory name containing maps, default maps\n"
+                                    "-v Verbose logging\n"
+                                    "-vv VERY verbose logging (including packets)\n");
         }
     }
 }
@@ -264,7 +265,7 @@ int startServer() {
 
 
     //Accept and incoming connection
-    if (debugLevel == INFO) printf("INFO: Waiting for incoming connections on port %d\n", PORT);
+    if (debugLevel >= INFO) printf("INFO:\tWaiting for incoming connections on port %d\n", PORT);
     c = sizeof(struct sockaddr_in);
     pthread_t thread_id;
 
@@ -276,7 +277,7 @@ int startServer() {
 
 
     while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
-        printf("INFO: Connection accepted from %s \n", inet_ntoa(client.sin_addr));
+        printf("INFO:\tConnection accepted from %s \n", inet_ntoa(client.sin_addr));
 
         clientInfo_t *currentClient = initClientData(client_sock, client.sin_addr);
 
@@ -296,6 +297,53 @@ int startServer() {
     }
 
     return 0;
+
+}
+
+/**
+ * Debugging function which is called when packet is sent/received prints out packet type and errno
+ */
+void debugPacket(enum packet_t packetType, const char *caller, const char *errorno) {
+    switch (packetType) {
+        case JOIN:
+            printf("DEBUG:\t%s with type JOIN %s\n", caller, errorno);
+            break;
+        case ACK:
+            printf("DEBUG:\t%s with type ACK %s\n", caller, errorno);
+            break;
+        case START:
+            printf("DEBUG:\t%s with type START %s\n", caller, errorno);
+            break;
+        case END:
+            printf("DEBUG:\t%s with type END %s\n", caller, errorno);
+            break;
+        case MAP:
+            printf("DEBUG:\t%s with type MAP %s\n", caller, errorno);
+            break;
+        case MOVE:
+            printf("DEBUG:\t%s with type MOVE %s\n", caller, errorno);
+            break;
+        case SCORE:
+            printf("DEBUG:\t%s with type SCORE %s\n", caller, errorno);
+            break;
+        case MESSAGE:
+            printf("DEBUG:\t%s with type MESSAGE %s\n", caller, errorno);
+            break;
+        case PLAYERS:
+            printf("DEBUG:\t%s with type PLAYERS %s\n", caller, errorno);
+            break;
+        case QUIT:
+            printf("DEBUG:\t%s with type QUIT %s\n", caller, errorno);
+            break;
+        case JOINED:
+            printf("DEBUG:\t%s with type JOINED %s\n", caller, errorno);
+            break;
+        case PLAYER_DISCONNECTED:
+            printf("DEBUG:\t%s with type PLAYER_DISCONNECTED %s\n", caller, errorno);
+            break;
+        default:
+            printf("DEBUG:\t%s UNKNOWN PACKET %s\n", caller, errorno);
+    }
 
 }
 
@@ -323,20 +371,26 @@ void sendPlayerDisconnect(clientInfo_t *client) {
     char buffer[MAX_PACKET_SIZE] = {0};
     buffer[0] = PLAYER_DISCONNECTED;
     memcpy(buffer + PACKET_TYPE_SIZE, &client->id, sizeof(int));
-    sendMassPacket(buffer, PACKET_TYPE_SIZE + sizeof(int));
+    sendMassPacket(buffer, PACKET_TYPE_SIZE + sizeof(int), client);
 }
 
 void receivePacket(char *buffer, ssize_t *bufferPointer, int sock) {
     initPacket(buffer, bufferPointer);
     *bufferPointer = recv(sock, buffer, MAX_PACKET_SIZE, 0);
-
+    if (debugLevel >= DEBUG) {
+        debugPacket((enum packet_t) buffer[0], __func__, strerror(errno));
+    }
 }
 
 /**
  * Sends the buffer to socket
  */
 void sendPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
+
     write(client->sock, buffer, (size_t) bufferPointer);
+    if (debugLevel >= DEBUG) {
+        debugPacket((enum packet_t) buffer[0], __func__, strerror(errno));
+    }
 }
 
 /**
@@ -348,11 +402,11 @@ void initPacket(char *buffer, ssize_t *bufferPointer) {
 }
 
 /*
- * Send the passed packet to all users
+ * Send the passed packet to everyone except the passed client
  */
-void sendMassPacket(char *buffer, ssize_t bufferPointer) {
+void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (clientArr[i]) {
+        if (clientArr[i] && clientArr[i] != client) {
             sendPacket(buffer, bufferPointer, clientArr[i]);
         }
     }
@@ -374,9 +428,9 @@ void processNewPlayer(clientInfo_t *clientInfo) {
      */
     receivePacket(buffer, &bufferPointer, clientInfo->sock);
     if (bufferPointer == 0) {
-        threadErrorHandler("INFO: Unauthenticated client disconnected", 1, clientInfo);
+        threadErrorHandler("INFO:\tUnauthenticated client disconnected", 1, clientInfo);
     } else if (bufferPointer == -1) {
-        threadErrorHandler("INFO: Recv failed", 2, clientInfo);
+        threadErrorHandler("INFO:\tRecv failed", 2, clientInfo);
     }
     if ((int) buffer[0] == JOIN) {
         memcpy(clientInfo->name, buffer + PACKET_TYPE_SIZE, MAX_NICK_SIZE);
@@ -387,7 +441,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             memcpy(buffer + PACKET_TYPE_SIZE, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo);
 
-            threadErrorHandler("INFO: Name is in use", 5, clientInfo);
+            threadErrorHandler("INFO:\tName is in use", 5, clientInfo);
         }
         if (findClientSpot(clientInfo) == NULL) {
             initPacket(buffer, &bufferPointer);
@@ -395,7 +449,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
             int errval = ERROR_SERVER_FULL;
             memcpy(buffer + PACKET_TYPE_SIZE, &errval, sizeof(int));
             sendPacket(buffer, 5, clientInfo);
-            threadErrorHandler("INFO: Server is full", 4, clientInfo);
+            threadErrorHandler("INFO:\tServer is full", 4, clientInfo);
         }
 
         // Everything OK, sending user ID
@@ -404,15 +458,15 @@ void processNewPlayer(clientInfo_t *clientInfo) {
         memcpy(buffer + PACKET_TYPE_SIZE, &clientInfo->id, sizeof(int));
         sendPacket(buffer, sizeof(int) + PACKET_TYPE_SIZE, clientInfo);
 
-        //Sending JOINED packet to everyone
+        //Sending JOINED packet to everyone except current client
         initPacket(buffer, &bufferPointer);
         buffer[0] = JOINED;
         memcpy(buffer + PACKET_TYPE_SIZE, &clientInfo->id, sizeof(int)); //Player ID
         memcpy(buffer + PACKET_TYPE_SIZE + sizeof(int), &clientInfo->name, MAX_NICK_SIZE); //Player name
-        sendMassPacket(buffer, sizeof(int) + PACKET_TYPE_SIZE + MAX_NICK_SIZE);
+        sendMassPacket(buffer, sizeof(int) + PACKET_TYPE_SIZE + MAX_NICK_SIZE, clientInfo);
 
 
-        printf("INFO: New player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
+        printf("INFO:\tNew player %s(%d) from %s\n", clientInfo->name, clientInfo->id, inet_ntoa(clientInfo->ip));
 
 
     } else {
@@ -426,77 +480,81 @@ void processNewPlayer(clientInfo_t *clientInfo) {
 /**
  * Function (in a seperate thread) which updates the client with game data (MAP/PLAYERS/SCORE)
  */
-void *playerSender(void *client) {
-    while (gameStarted) {
-        // Prepare MAP packet
-        /*
-         * 0 - PACKET TYPE
-         * 1- height*width+1 Map data
-         * Map data doesn't require map size since it is previously sent in the START packet
-         */
-        char buffer[MAX_MAP_HEIGHT * MAX_MAP_WIDTH + PACKET_TYPE_SIZE];
-        buffer[0] = MAP;
-        int bufferPointer = 1;
-        for (int i = 0; i < MAP_CURRENT->height; i++) {
-            for (int j = 0; j < MAP_CURRENT->width; j++) {
-                buffer[bufferPointer] = MAP_CURRENT->map[i][j];
-                bufferPointer++;
+void *playerSender(void *clientP) {
+    clientInfo_t *client = (clientInfo_t *) clientP;
+    while (true) {
+        while (gameStarted) {
+            // Prepare MAP packet
+            /*
+             * 0 - PACKET TYPE
+             * 1- height*width+1 Map data
+             * Map data doesn't require map size since it is previously sent in the START packet
+             */
+            char buffer[MAX_MAP_HEIGHT * MAX_MAP_WIDTH + PACKET_TYPE_SIZE];
+            buffer[0] = MAP;
+            int bufferPointer = 1;
+            for (int i = 0; i < MAP_CURRENT->height; i++) {
+                for (int j = 0; j < MAP_CURRENT->width; j++) {
+                    buffer[bufferPointer] = MAP_CURRENT->map[i][j];
+                    bufferPointer++;
+                }
             }
-        }
-        sendPacket(buffer, bufferPointer, client);
-        // Prepare PLAYERS packet
-        /*
-         * 0 - PACKET TYPE
-         * 1-4 OBJECT COUNT
-         * 5-19..19-33... Player information for each player 14 bytes(int(4)+float(4)+float(4)+PlayerState(1)+PlayerType(1))
-         */
+            sendPacket(buffer, bufferPointer, client);
+            // Prepare PLAYERS packet
+            /*
+             * 0 - PACKET TYPE
+             * 1-4 OBJECT COUNT
+             * 5-19..19-33... Player information for each player 14 bytes(int(4)+float(4)+float(4)+PlayerState(1)+PlayerType(1))
+             */
 
-        memset(buffer, 0, MAX_PACKET_SIZE);
-        buffer[0] = PLAYERS;
-        int objectCount = 0; //Amount of player objects
-        bufferPointer = 5; //Start of the player information in buffer
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (clientArr[i] && clientArr[i]->active) {
-                memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player ID
-                bufferPointer += sizeof(int);
-                memcpy(buffer + bufferPointer, &clientArr[i]->x, sizeof(float)); //Player x coordinates
-                bufferPointer += sizeof(float);
-                memcpy(buffer + bufferPointer, &clientArr[i]->y, sizeof(float)); //Player y coordinates
-                bufferPointer += sizeof(float);
-                buffer[bufferPointer++] = clientArr[i]->playerState;
-                buffer[bufferPointer++] = clientArr[i]->playerType;
-                objectCount++;
+            memset(buffer, 0, MAX_PACKET_SIZE);
+            buffer[0] = PLAYERS;
+            int objectCount = 0; //Amount of player objects
+            bufferPointer = 5; //Start of the player information in buffer
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (clientArr[i] && clientArr[i]->active) {
+                    memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player ID
+                    bufferPointer += sizeof(int);
+                    memcpy(buffer + bufferPointer, &clientArr[i]->x, sizeof(float)); //Player x coordinates
+                    bufferPointer += sizeof(float);
+                    memcpy(buffer + bufferPointer, &clientArr[i]->y, sizeof(float)); //Player y coordinates
+                    bufferPointer += sizeof(float);
+                    buffer[bufferPointer++] = clientArr[i]->playerState;
+                    buffer[bufferPointer++] = clientArr[i]->playerType;
+                    objectCount++;
+                }
             }
-        }
-        memcpy(buffer + 1, &objectCount, sizeof(int));
-        sendPacket(buffer, bufferPointer, client);
+            memcpy(buffer + PACKET_TYPE_SIZE, &objectCount, sizeof(int)); // Object count
+            sendPacket(buffer, bufferPointer, client);
 
-        // Prepare score packet
-        /*
-         * 0 - Packet type
-         * 1 - 4 Object count
-         * 5 - 8 Player score
-         * 9 - 12 Player ID
-         * Repeat player score and player ID for each player
-         */
-        objectCount = 0;
-        memset(buffer, 0, MAX_PACKET_SIZE);
-        buffer[0] = SCORE;
-        bufferPointer = 5;
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            if (clientArr[i] && clientArr[i]->active) {
-                memcpy(buffer + bufferPointer, &clientArr[i]->score, sizeof(int)); //Player score
-                bufferPointer += sizeof(int);
-                memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player score
-                bufferPointer += sizeof(int);
+            // Prepare score packet
+            /*
+             * 0 - Packet type
+             * 1 - 4 Object count
+             * 5 - 8 Player score
+             * 9 - 12 Player ID
+             * Repeat player score and player ID for each player
+             */
+            objectCount = 0;
+            memset(buffer, 0, MAX_PACKET_SIZE);
+            buffer[0] = SCORE;
+            bufferPointer = 5;
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (clientArr[i] && clientArr[i]->active) {
+                    memcpy(buffer + bufferPointer, &clientArr[i]->score, sizeof(int)); //Player score
+                    bufferPointer += sizeof(int);
+                    memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player id
+                    bufferPointer += sizeof(int);
+                }
             }
+            memcpy(buffer + 1, &objectCount, sizeof(int));
+            sendPacket(buffer, bufferPointer, client);
+
+
+            sleep_ms(TICK_FREQUENCY);
+
         }
-        memcpy(buffer + 1, &objectCount, sizeof(int));
-        sendPacket(buffer, bufferPointer, client);
-
-
         sleep_ms(TICK_FREQUENCY);
-
     }
     return 0;
 
@@ -506,11 +564,53 @@ void *playerSender(void *client) {
  * Function (in a seperate thread) which receives updates from the client (MOVE/MESSAGE/QUIT(PLAYER_DISCONNECTED))
  */
 void *playerReceiver(void *client) {
+    clientInfo_t *clientInfo = (clientInfo_t *) client;
     while (true) {
+//       char buffer[MAX_PACKET_SIZE];
+//       memset(buffer, 0, MAX_PACKET_SIZE);
+//       int bufferPointer = 0;
+//       int messageLength = 0;
+//       receivePacket(buffer, bufferPointer, clientInfo->sock);
+//       switch (buffer[0]){
+//           case MOVE:
+//               /*
+//                * 1-4 Player ID (Not really required in stateful connection)
+//                * 5 Player Move
+//                */
+//               processMove(clientInfo, (enum clientMovement_t)buffer[5] );
+//               break;
+//           case MESSAGE:
+//               /*
+//                * 1-4 Player ID (Not really required in stateful connection)
+//                * 5-8 Message length
+//                * 9-... Message
+//                */
+
+//               processMessage(clientInfo, messageLength, buffer+9);
+//               break;
+//           case QUIT:
+//               /*
+//                * 1-4 Player ID (Not really required in stateful connection)
+//                */
+//               processQuit(clientInfo);
+//               break;
+//       }
 
         sleep_ms(TICK_FREQUENCY);
     }
     return 0;
+}
+
+void processMove(clientInfo_t *client, enum clientMovement_t move) {
+
+}
+
+void processMessage(clientInfo_t *client, int messageLength, char *message) {
+
+}
+
+void processQuit(clientInfo_t *client) {
+
 }
 
 /**
@@ -528,8 +628,8 @@ void *handle_connection(void *conn) {
     if (gameStarted && !clientInfo->active) {
         char buffer[MAX_PACKET_SIZE] = {0};
         prepareStartPacket(buffer, clientInfo);
+        if (debugLevel >= DEBUG) printf("DEBUG:\t%s joined late, also sending START packet\n", clientInfo->name);
         sendPacket(buffer, 5, clientInfo);
-        if (debugLevel == DEBUG) printf("DEBUG: %s joined late, also sending START packet\n", clientInfo->name);
     }
 
     pthread_t thread_id;
@@ -594,7 +694,7 @@ void sendStartPackets() {
         memset(buffer, 0, MAX_PACKET_SIZE);
         if (clientArr[i] != NULL) {
             prepareStartPacket(buffer, clientArr[i]);
-            if (debugLevel == DEBUG) printf("DEBUG: Sending START packet to %s\n", clientArr[i]->name);
+            if (debugLevel >= DEBUG) printf("DEBUG:\tSending START packet to %s\n", clientArr[i]->name);
             sendPacket(buffer, 5, clientArr[i]);
         }
     }
@@ -687,8 +787,8 @@ void findStartingPosition(clientInfo_t *client) {
             if (spotFound) break;
         }
     }
-    if (debugLevel == DEBUG)
-        printf("DEBUG: %s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
+    if (debugLevel >= VERBOSE)
+        printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
 }
 
 /*
@@ -698,11 +798,11 @@ void pacmanOrGhost(clientInfo_t *client) {
     unsigned int state = getActivePlayerCount() % (GHOST_RATIO + PACMAN_RATIO);
     if (state < GHOST_RATIO) {
         client->playerType = Ghost;
-        if (debugLevel == DEBUG) printf("DEBUG: %s will be a GHOST \n", client->name);
+        if (debugLevel >= VERBOSE) printf("VERBOSE:\t%s will be a GHOST \n", client->name);
     }
     if (state >= GHOST_RATIO) {
         client->playerType = Pacman;
-        if (debugLevel == DEBUG) printf("DEBUG: %s will be a PACMAN \n", client->name);
+        if (debugLevel >= VERBOSE) printf("VERBOSE:\t%s will be a PACMAN \n", client->name);
     }
 }
 
@@ -733,7 +833,7 @@ void prepareStartPacket(char *buffer, clientInfo_t *client) {
 
 
 void *gameController(void *a) {
-    printf("INFO: Game controller started\n");
+    printf("INFO:\tGame controller started\n");
     MAP_CURRENT = MAP_HEAD;
     unsigned long int TICK = 0;
     gameStarted = false;
@@ -742,11 +842,11 @@ void *gameController(void *a) {
         if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
             if (TICK == 0) {
                 gameStarted = true;
-                if (debugLevel == DEBUG) printf("DEBUG: Game started, sending START packets\n");
+                if (debugLevel >= DEBUG) printf("DEBUG:\tGame started, sending START packets\n");
                 sendStartPackets();
             }
             TICK += 1;
-            if (debugLevel == DEBUG) printf("DEBUG: TICK %lu\n", TICK);
+            if (debugLevel >= DEBUG) printf("DEBUG:\tTICK %lu\n", TICK);
         }
     }
 }
@@ -798,7 +898,7 @@ void addMap(FILE *mapfile, char name[256]) {
     } while (c != EOF);
     map->width = x;
     map->height = y;
-    if (debugLevel == DEBUG) printf("DEBUG: Map %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
+    if (debugLevel >= VERBOSE) printf("VERBOSE:\tMap %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
 
 }
 
@@ -827,7 +927,7 @@ void initMaps() {
             // Open file
             open_file = fopen(filepath, "r");
             if (open_file == NULL) {
-                fprintf(stderr, "INFO: Failed to open %s, skipping\n", ent->d_name);
+                fprintf(stderr, "INFO:\tFailed to open %s, skipping\n", ent->d_name);
                 fclose(open_file);
                 continue;
             }
