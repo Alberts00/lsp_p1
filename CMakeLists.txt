@@ -12,7 +12,7 @@ ENDIF(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
 
 set(SERVER_SOURCE_FILES server/main.c)
 set(CLIENT_SOURCE_FILES client/main.c)
-
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/bin")
 add_executable(lsp_p1_server ${SERVER_SOURCE_FILES})
 add_executable(lsp_p1_client ${CLIENT_SOURCE_FILES})
 target_link_libraries(lsp_p1_client ${CURSES_LIBRARIES})
