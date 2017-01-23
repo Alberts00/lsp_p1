@@ -23,7 +23,6 @@
  */
 int sock;
 WINDOW *mainWindow;
-WINDOW *scoreWindow;
 WINDOW *scoreBoardWindow;
 WINDOW *notificationWindow;
 WINDOW *connectionWindow;
@@ -38,7 +37,7 @@ int myId;
  */
 // Packet type enumerations
 enum packet_t {
-    JOIN, ACK, START, END, MAP, PLAYERS, SCORE, MOVE, MESSAGE, QUIT, JOINED, PLAYER_DISCONNECTED
+    JOIN, ACK, START, END, MAP, PLAYERS, SCORES, MOVE, MESSAGE, QUIT, JOINED, PLAYER_DISCONNECTED
 };
 
 enum connectionError_t {
@@ -52,7 +51,7 @@ enum mapObjecT_t {
 
 // Player state enumerations
 enum playerState_t {
-    NORMAL, DEAD
+    PS_NORMAL, PS_DEAD, PS_PowerPellet, PS_Invincibility, PS_Other
 };
 // Player type enumerations
 enum playerType_t {
@@ -74,7 +73,9 @@ void windowDeleteAction(WINDOW*);
 void waitForStartPacket(int*, int*);
 void drawMap(char*);
 void drawPlayers(char*);
+void drawScoreTable(char*);
 void createNotificationWindow();
+void createScoreBoardWindow();
 void epicDebug(char*);
 
 
@@ -91,6 +92,13 @@ void epicDebug(char*);
 #define NOTIFICATION_HEIGHT 30
 #define NOTIFICATION_WIDTH 40
 #define NOTIFICATION_OFFSET 3
+#define SCORE_HEIGHT 20
+#define SCORE_WIDTH 40
+#define GREEN_PAIR 1
+#define RED_PAIR 2
+#define YELLOW_PAIR 3
+#define BLUE_PAIR 4
+#define WHITE_PAIR 5
 
 void *safe_malloc(size_t size) {
     void *p = malloc(size);
@@ -121,7 +129,6 @@ void exitWithMessage(char error[]) {
 }
 
 void deleteAllWindows() {
-    windowDeleteAction(scoreWindow);
     windowDeleteAction(scoreBoardWindow);
     windowDeleteAction(notificationWindow);
     windowDeleteAction(connectionWindow);
@@ -143,6 +150,13 @@ void sendTextNotification(char text[]) {
 }
 
 void writeToWindow(WINDOW* window, int y, int x, char text[]) {
+    if(notificationCounter > NOTIFICATION_HEIGHT - 1) {
+        werase(notificationWindow);
+        notificationCounter = 0;
+        box(window, 0, 0);
+        writeToWindow(notificationWindow, 0, 0, "Messages ");
+    }
+
     mvwprintw(window, y, x, text);
     wrefresh(window);
 }
@@ -157,29 +171,6 @@ int main(int argc, char *argv[]) {
     myId = 0;
 
     initCurses();
-
-    char map[15][31] =
-            {
-                    {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2},
-                    {2,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,2},
-                    {2,1,2,2,2,1,2,1,2,2,2,1,2,2,2,2,2,2,2,1,2,2,2,1,2,1,2,2,2,1,2},
-                    {2,1,2,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,5,2,1,2},
-                    {2,1,1,1,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,1,1,1,2},
-                    {2,2,2,1,2,1,1,1,2,3,2,1,1,1,1,1,1,1,1,1,2,1,2,1,1,1,2,1,2,2,2},
-                    {2,3,1,1,2,1,2,2,2,1,2,1,2,2,2,2,2,2,2,1,2,1,2,2,2,1,2,1,1,1,2},
-                    {2,1,2,2,2,1,1,1,1,1,1,1,2,0,0,0,0,0,2,1,1,1,1,1,1,1,2,2,2,1,2},
-                    {2,1,1,1,2,1,2,2,2,1,2,1,2,2,2,2,2,2,2,1,2,1,2,2,2,1,2,1,1,1,2},
-                    {2,2,2,1,2,4,1,1,2,1,2,1,1,1,1,1,1,1,1,1,2,1,2,1,1,1,2,1,2,2,2},
-                    {2,1,1,1,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,2,1,2,1,2,2,2,1,1,1,2},
-                    {2,1,2,1,1,1,1,1,2,1,1,1,1,1,1,2,1,1,1,1,1,1,2,1,4,1,1,1,2,1,2},
-                    {2,1,2,2,2,1,2,1,2,2,2,1,2,2,2,2,2,2,2,1,2,2,2,4,2,1,2,2,2,1,2},
-                    {2,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,2,1,1,1,1,1,2},
-                    {2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2},
-            };
-
-//    drawMap(15, 31, map[0]);
-//    sleep(100);
-
 
     connectionDialog(serverAddress, serverPort);
 
@@ -205,6 +196,7 @@ int main(int argc, char *argv[]) {
     waitForStartPacket(&startX, &startY);
 
     createNotificationWindow();
+    createScoreBoardWindow();
     // Start packet received, we can start listening to the server and sending our data
 
     // Start a new thread to listen to the server
@@ -280,9 +272,10 @@ void connectionDialog(char *address, char *port) {
 //    strcpy(address, "95.68.71.51"); // Alberts
 //    strcpy(address, "149.202.149.77"); // Alberts
 //    strcpy(address, "81.198.119.38"); // Arnolds
-    strcpy(address, "192.168.0.103"); // VM
+//    strcpy(address, "192.168.0.103"); // VM
+    strcpy(address, "192.168.120.93"); // SW
     strcpy(port, "8888");
-//    strcpy(port, "2042"); // Arnolds
+//    strcpy(port, "2017"); // Arnolds
 }
 
 /**
@@ -388,6 +381,19 @@ void createNotificationWindow() {
 }
 
 /**
+ * Creates the window for scoreboard
+ */
+void createScoreBoardWindow() {
+    int xOffset = NOTIFICATION_WIDTH + NOTIFICATION_OFFSET + WORLD_WIDTH + 3;
+    scoreBoardWindow = newwin(SCORE_HEIGHT, SCORE_WIDTH, 3, xOffset);
+    box(scoreBoardWindow, 0, 0);
+    scrollok(scoreBoardWindow, TRUE);
+    writeToWindow(scoreBoardWindow, 0, 0, "Scoreboard ");
+    refresh();
+}
+
+
+/**
  * Continuously listen to the game server and act on packets
  *
  * @param conn
@@ -420,6 +426,12 @@ void *listenToServer(void *conn) {
             case PLAYERS:
                 drawPlayers(message);
                 break;
+            case SCORES:
+                drawScoreTable(message);
+                break;
+            case MESSAGE:
+//                handleMessage();
+                break;
             default:
                 break;
         }
@@ -449,6 +461,19 @@ void initCurses() {
     noecho(); // Don't echo any keypresses
     curs_set(FALSE); // Don't display a cursor
 
+    start_color();
+
+    // Initialize color levels and color pairs
+    init_color(COLOR_GREEN, 0, 700, 0);
+    init_color(COLOR_RED, 700, 0, 0);
+    init_color(COLOR_YELLOW, 500, 500, 0);
+
+    init_pair(GREEN_PAIR, COLOR_GREEN, COLOR_BLACK);
+    init_pair(RED_PAIR, COLOR_RED, COLOR_BLACK);
+    init_pair(YELLOW_PAIR, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(BLUE_PAIR, COLOR_BLUE, COLOR_BLACK);
+    init_pair(WHITE_PAIR, COLOR_WHITE, COLOR_BLACK);
+
     // Center the inner window
     offsetX = (COLS - WORLD_WIDTH) / 2;
     offsetX = offsetX + (NOTIFICATION_WIDTH - offsetX) + NOTIFICATION_OFFSET;
@@ -474,8 +499,6 @@ void drawMap(char *map) {
     writeToWindow(notificationWindow, ++notificationCounter, 1, "Received map from the server");
 
     map++;
-    start_color();
-    init_pair(4, COLOR_WHITE, COLOR_BLACK);
 
     for (int i = 0; i < mapH; ++i) {
         for (int j = 0; j < mapW; ++j) {
@@ -484,12 +507,12 @@ void drawMap(char *map) {
 
             switch (blockType) {
                 case Wall:
-                    wattron(mainWindow, COLOR_PAIR(1)|A_BOLD);
                     mvwaddch(mainWindow, i+1, j+1, 97 | A_ALTCHARSET);
-                    wattroff(mainWindow, COLOR_PAIR(1)|A_BOLD);
                     break;
                 case Dot:
+                    wattron(mainWindow, COLOR_PAIR(WHITE_PAIR)|A_BOLD);
                     mvwaddch(mainWindow, i+1, j+1, '.');
+                    wattroff(mainWindow, COLOR_PAIR(WHITE_PAIR)|A_BOLD);
                     break;
                 case PowerPellet:
                     mvwaddch(mainWindow, i+1, j+1, ACS_DIAMOND);
@@ -524,7 +547,6 @@ void drawPlayers(char *players) {
 
     int playerCount;
     memcpy((void *) &playerCount, (void *) *&players, sizeof(playerCount));
-
     players += sizeof(playerCount);
 
     int playerId;
@@ -549,39 +571,83 @@ void drawPlayers(char *players) {
         int integerPosX = (int)roundf(playerX);
         int integerPosY = (int)roundf(playerY);
 
-        start_color();
-
-        // Initialize color levels and color pairs
-        init_color(COLOR_GREEN, 0, 700, 0);
-        init_color(COLOR_RED, 700, 0, 0);
-        init_color(COLOR_YELLOW, 500, 500, 0);
-
-        init_pair(1, COLOR_GREEN, COLOR_BLACK);
-        init_pair(2, COLOR_RED, COLOR_BLACK);
-        init_pair(3, COLOR_YELLOW, COLOR_BLACK);
-
-        int usePair = 1;
+        // Default color (pacman)
+        int usePair = GREEN_PAIR;
 
         // Determine which pair to use
         if(playerType == Ghost) {
-            usePair = 2;
-        }
-        if(playerId == myId) {
-            usePair = 3;
+            usePair = RED_PAIR;
         }
 
-        // Draw player and set it's color
+        if(playerId == myId) {
+            usePair = YELLOW_PAIR;
+        }
+
+        if(playerState == PS_Invincibility) {
+            usePair = WHITE_PAIR;
+        } else if (playerState == PS_PowerPellet) {
+            usePair = BLUE_PAIR;
+        }
+
+        // Draw player and set its color
         wattron(mainWindow, COLOR_PAIR(usePair));
-        if(playerType == Ghost) {
-            mvwaddch(mainWindow, integerPosY+1, integerPosX+1, '&');
-        } else {
-            mvwaddch(mainWindow, integerPosY+1, integerPosX+1, '@');
+        if(playerState != PS_DEAD) {
+            if(playerType == Ghost) {
+                mvwaddch(mainWindow, integerPosY+1, integerPosX+1, '&');
+            } else {
+                mvwaddch(mainWindow, integerPosY+1, integerPosX+1, '@');
+            }
         }
         wattroff(mainWindow, COLOR_PAIR(usePair));
     }
 
     refresh();
     wrefresh(mainWindow);
+}
+
+/**
+ * Main method for scoreboard drawing
+ *
+ * @param mapH
+ * @param mapW
+ * @param map
+ */
+void drawScoreTable(char *scores) {
+    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received scores from the server");
+
+    scores++;
+
+    int scoreCount;
+    memcpy((void *) &scoreCount, (void *) *&scores, sizeof(scoreCount));
+    scores += sizeof(scoreCount);
+
+    int playerId, playerScore;
+
+    // Get information about each player and draw the scores
+    for (int i = 0; i < scoreCount; ++i) {
+        memcpy((void *) &playerScore, (void *) *&scores, sizeof(playerScore));
+        scores += sizeof(playerScore);
+        memcpy((void *) &playerId, (void *) *&scores, sizeof(playerId));
+        scores += sizeof(playerId);
+
+        char printId[MAX_PACKET_SIZE] = {0};
+        char printScore[MAX_PACKET_SIZE] = {0};
+        sprintf(printId, "%d", playerId);
+        sprintf(printScore, "%d", playerScore);
+
+        if(playerId == myId) {
+            wattron(scoreBoardWindow, COLOR_PAIR(GREEN_PAIR));
+        }
+
+        writeToWindow(scoreBoardWindow, i+1, 1, printId);
+        writeToWindow(scoreBoardWindow, i+1, 25, printScore);
+
+        if(playerId == myId) {
+            wattroff(scoreBoardWindow, COLOR_PAIR(GREEN_PAIR));
+        }
+    }
+
+    refresh();
 }
 
 /**
