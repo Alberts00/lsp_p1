@@ -35,11 +35,12 @@
 #define MAX_NICK_SIZE 20
 #define MAX_MAP_HEIGHT 100
 #define MAX_MAP_WIDTH 100
-#define MIN_PLAYERS 2
-#define TICK_FREQUENCY 1000 //Time between ticks in miliseconds
+#define MIN_PLAYERS 1
+#define TICK_FREQUENCY 1000 // Time between ticks in miliseconds
 #define GHOST_RATIO 1
 #define PACMAN_RATIO 1
-#define SPAWNPOINT_TRAVERSAL_RANGE 3
+#define SPAWNPOINT_TRAVERSAL_RANGE 3 // Nearby blocks to be checked for enemies when spawning
+#define TICK_MOVEMENT 0.2f // Player movement per each tick
 
 
 /*
@@ -118,6 +119,8 @@ void sendMessage(int playerId, int messageLength, char *message);
 
 void processQuit(clientInfo_t *client);
 
+void processTick();
+
 /*
  * Structs
  */
@@ -151,12 +154,13 @@ typedef struct mapList {
  * Globals
  */
 clientInfo_t *clientArr[MAX_PLAYERS];   // Array holding all player data
-int PORT;                               // Server port
-char MAPDIR[FILENAME_MAX];              // Directory containing maps
+int PORT;                               // Server port (-p)
+char MAPDIR[FILENAME_MAX];              // Directory containing maps (-m)
 mapList_t *MAP_HEAD;                    // Pointer to the first MAP
 bool gameStarted;                       // True if the game is in progress
 mapList_t *MAP_CURRENT;                 // Pointer to the current loaded MAP
-enum debugLevel_t debugLevel;
+enum debugLevel_t debugLevel;           // Holds debugging level of the server (-v/-vv)
+
 
 
 void *safe_malloc(size_t size) {
@@ -591,7 +595,7 @@ void *playerReceiver(void *client) {
                  * 1-4 Player ID (Not really required in stateful connection)
                  * 5 Player Move
                  */
-                processMove(clientInfo, (enum clientMovement_t) buffer[5]);
+                clientInfo->clientMovement = (enum clientMovement_t) buffer[5];
                 break;
             case MESSAGE:
                 /*
@@ -622,9 +626,6 @@ void *playerReceiver(void *client) {
     return 0;
 }
 
-void processMove(clientInfo_t *client, enum clientMovement_t move) {
-
-}
 
 /**
  * Sends a special character stripped message to all players, playerId must be validated before sending
@@ -797,7 +798,6 @@ void findStartingPosition(clientInfo_t *client) {
     if (client->playerType == Pacman) { // If Pacman start search in the upper left corner
         int rows = MAP_CURRENT->height;
         int cols = MAP_CURRENT->width;
-        bool spotFound = false;
         for (int i = 0; i < rows; i++) {
             for (int j = 0; j < cols; j++) {
                 if (MAP_CURRENT->map[i][j] != Wall &&
@@ -805,16 +805,17 @@ void findStartingPosition(clientInfo_t *client) {
                     // Traverse close blocks to see if there aren't any Ghosts
                     // We need to make sure that we do not check negative array values
                     bool enemyFound = false;
+                    //Do not spawn on friendlies
+                    if (isSomeoneThere(i, j) && isSomeoneThere(i, j)->playerType == Pacman) {
+                        continue;
+                    }
 
                     for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? i : i - SPAWNPOINT_TRAVERSAL_RANGE;
                          ii < i + SPAWNPOINT_TRAVERSAL_RANGE && i + SPAWNPOINT_TRAVERSAL_RANGE <= rows; ii++) {
                         for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? j : j - SPAWNPOINT_TRAVERSAL_RANGE;
                              jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
-                            clientInfo_t *contender = isSomeoneThere(jj, ii);
-                            //Do not spawn on friendlies
-                            if (contender && contender->playerType == Pacman) {
-                                continue;
-                            }
+                            clientInfo_t *contender = isSomeoneThere(ii, jj);
+
                             //Make sure that player is not spawned near enemy
                             if (contender && contender->playerType == Ghost) {
                                 enemyFound = true;
@@ -826,13 +827,12 @@ void findStartingPosition(clientInfo_t *client) {
                     if (enemyFound == false) {
                         client->x = (float) i;
                         client->y = (float) j;
-                        spotFound = true;
-                        break;
+                        if (debugLevel >= VERBOSE)
+                            printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
+                        return;
                     }
                 }
-                if (spotFound) break;
             }
-            if (spotFound) break;
         }
     } else if (client->playerType == Ghost) { // If Ghost start search in lower right corner
         int rows = MAP_CURRENT->height;
@@ -845,15 +845,16 @@ void findStartingPosition(clientInfo_t *client) {
                     // Traverse close blocks to see if there aren't any Ghosts
                     // We need to make sure that we do not check negative array values
                     bool enemyFound = false;
+                    //Do not spawn on friendlies
+                    if (isSomeoneThere(i, j) && isSomeoneThere(i, j)->playerType == Ghost) {
+                        continue;
+                    }
                     for (int ii = (i - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? i : i - SPAWNPOINT_TRAVERSAL_RANGE;
                          ii < i + SPAWNPOINT_TRAVERSAL_RANGE && i + SPAWNPOINT_TRAVERSAL_RANGE <= rows; ii++) {
                         for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? j : j - SPAWNPOINT_TRAVERSAL_RANGE;
                              jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
-                            clientInfo_t *contender = isSomeoneThere(jj, ii);
-                            //Do not spawn on friendlies
-                            if (contender && contender->playerType == Ghost) {
-                                continue;
-                            }
+                            clientInfo_t *contender = isSomeoneThere(ii, jj);
+
                             //Make sure that player is not spawned near enemy
                             if (contender && contender->playerType == Pacman) {
                                 enemyFound = true;
@@ -865,17 +866,15 @@ void findStartingPosition(clientInfo_t *client) {
                     if (enemyFound == false) {
                         client->x = (float) i;
                         client->y = (float) j;
-                        spotFound = true;
-                        break;
+                        if (debugLevel >= VERBOSE)
+                            printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
+                        return;
                     }
                 }
-                if (spotFound) break;
             }
-            if (spotFound) break;
         }
     }
-    if (debugLevel >= VERBOSE)
-        printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
+
 }
 
 /*
@@ -932,10 +931,20 @@ void *gameController(void *a) {
                 if (debugLevel >= DEBUG) printf("DEBUG:\tGame started, sending START packets\n");
                 sendStartPackets();
             }
+            processTick();
             TICK += 1;
             if (debugLevel >= DEBUG) printf("DEBUG:\tTICK %lu\n", TICK);
         }
     }
+}
+
+/**
+ * Collision detection, powerup and player movement function
+ */
+void processTick(){
+
+
+
 }
 
 void addMap(FILE *mapfile, char name[256]) {
