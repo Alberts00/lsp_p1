@@ -525,7 +525,7 @@ void *playerSender(void *clientP) {
             /*
              * 0 - PACKET TYPE
              * 1-4 OBJECT COUNT
-             * 5-19..19-33... Player information for each player 14 bytes(int(4)+float(4)+float(4)+PlayerState(1)+PlayerType(1))
+             * 5-19..20-33... Player information for each player 14 bytes(int(4)+float(4)+float(4)+PlayerState(1)+PlayerType(1))
              */
 
             memset(buffer, 0, MAX_PACKET_SIZE);
@@ -828,8 +828,8 @@ void findStartingPosition(clientInfo_t *client) {
                         if (enemyFound) break;
                     }
                     if (enemyFound == false) {
-                        client->x = (float) i;
-                        client->y = (float) j;
+                        client->x = (float) j;
+                        client->y = (float) i;
                         if (debugLevel >= VERBOSE)
                             printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x,
                                    (int) client->y);
@@ -868,8 +868,8 @@ void findStartingPosition(clientInfo_t *client) {
                         if (enemyFound) break;
                     }
                     if (enemyFound == false) {
-                        client->x = (float) i;
-                        client->y = (float) j;
+                        client->x = (float) j;
+                        client->y = (float) i;
                         if (debugLevel >= VERBOSE)
                             printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x,
                                    (int) client->y);
