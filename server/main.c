@@ -36,12 +36,15 @@
 #define MAX_MAP_HEIGHT 100
 #define MAX_MAP_WIDTH 100
 #define MIN_PLAYERS 1
-#define TICK_FREQUENCY 1000 // Time between ticks in miliseconds
+#define TICK_FREQUENCY 1000             // Time between ticks in miliseconds
 #define GHOST_RATIO 1
 #define PACMAN_RATIO 1
-#define SPAWNPOINT_TRAVERSAL_RANGE 3 // Nearby blocks to be checked for enemies when spawning
-#define TICK_MOVEMENT 0.2f // Player movement per each tick
-
+#define SPAWNPOINT_TRAVERSAL_RANGE 3    // Nearby blocks to be checked for enemies when spawning
+#define TICK_MOVEMENT 0.2f              // Player movement per each tick
+#define DOT_POINTS 10                   //Points given for encountering DOT tole
+#define SCORE_POINTS 100                //Points given for encountering SCORE tile
+#define POWERUP_PowerPellet 120         //Ticks before PowerPellet expires
+#define POWERUP_Invincibility 120       //Ticks before Invincibility expires
 
 /*
  * Enumerations
@@ -119,7 +122,7 @@ void sendMessage(int playerId, int messageLength, char *message);
 
 void processQuit(clientInfo_t *client);
 
-void processTick();
+void processTick(unsigned long int TICK);
 
 /*
  * Structs
@@ -667,7 +670,7 @@ void processQuit(clientInfo_t *client) {
     char buffer[5];
     buffer[0] = PLAYER_DISCONNECTED;
     memcpy(buffer + 1, &client->id, sizeof(int)); // Player ID
-    sendMassPacket(buffer,5,client);
+    sendMassPacket(buffer, 5, client);
     //TODO Clean up player data (pthread_kill);
 
 }
@@ -681,14 +684,14 @@ void stripSpecialCharacters(int *messageLength, char *message) {
     int newMessageLength = 0;
     char newMessage[MAX_PACKET_SIZE];
     for (int i = 0; i < *messageLength; i++) {
-        if (message[i]>= 32 && message[i]<=126) {
+        if (message[i] >= 32 && message[i] <= 126) {
             newMessage[newMessageLength++] = message[i];
         }
     }
     newMessage[newMessageLength++] = '\0'; //Make sure that the message ends with null character
     *messageLength = newMessageLength;
-    memset(message, 0, (size_t)*messageLength);
-    memcpy(message, newMessage, (size_t)newMessageLength);
+    memset(message, 0, (size_t) *messageLength);
+    memcpy(message, newMessage, (size_t) newMessageLength);
 }
 
 /**
@@ -828,7 +831,8 @@ void findStartingPosition(clientInfo_t *client) {
                         client->x = (float) i;
                         client->y = (float) j;
                         if (debugLevel >= VERBOSE)
-                            printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
+                            printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x,
+                                   (int) client->y);
                         return;
                     }
                 }
@@ -867,7 +871,8 @@ void findStartingPosition(clientInfo_t *client) {
                         client->x = (float) i;
                         client->y = (float) j;
                         if (debugLevel >= VERBOSE)
-                            printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x, (int) client->y);
+                            printf("VERBOSE:\t%s will start at (%d:%d)\n", client->name, (int) client->x,
+                                   (int) client->y);
                         return;
                     }
                 }
@@ -941,7 +946,60 @@ void *gameController(void *a) {
 /**
  * Collision detection, powerup and player movement function
  */
-void processTick(){
+void processTick(unsigned long int TICK) {
+    //Check of player has any powerups and if there are decrease their tick
+
+    //Find if a player is eligible for powerup by stepping on it
+
+
+    //Check if player has a collision with something
+
+    /*
+     * Ghost -> Pacman
+     * Pacman DEAD if he does not have invincibility
+     */
+
+
+
+    /* Pacman- -> Powerup
+     * Check what kind of powerup it is
+     * Same as existing - reset powerup ticks to default
+     * If it is powerPellet override invincibility and adjust ticks
+     * If it is invincibility adjust ticks
+     * If it is SCORE increase players score
+     * Remove powerup from tile
+     */
+
+
+    /* Ghost -> Powerup (do we even need this?)
+     *  ??? maybe he can eat powerPellet for more speed
+     */
+
+
+    /* Pacman-> Dot
+     *  If tile is a dot increase players score, remove dot
+     */
+
+
+
+    /* Ghost -> Dot (do we even need this?)
+     * ???
+     */
+
+    /*
+     * Pacman -> Ghost
+     * If Pacman has PowerPellet and they are on the same tile GHOST=DEAD
+     */
+
+
+
+    /* Both -> Wall
+     * If in the next tile of player MOVE is a wall do not change its position
+     * else move the player by TICK_MOVEMENT
+     */
+
+
+    //Spawn a powerup in almost random position
 
 
 
