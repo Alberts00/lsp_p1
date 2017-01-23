@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <dirent.h>
+#include <ctype.h>
 
 #ifdef WIN32
 #include <windows.h>
@@ -40,34 +41,6 @@
 #define PACMAN_RATIO 1
 #define SPAWNPOINT_TRAVERSAL_RANGE 3
 
-
-typedef struct clientInfo clientInfo_t;
-
-void exitWithMessage(char error[]);
-
-void *handle_connection(void *socket_desc);
-
-void processArgs(int argc, char *argv[]);
-
-void *safe_malloc(size_t);
-
-int startServer();
-
-void initPacket(char *buffer, ssize_t *bufferPointer);
-
-void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client);
-
-clientInfo_t *initClientData(int, struct in_addr);
-
-void sendPlayerDisconnect(clientInfo_t *client);
-
-void *gameController(void *a);
-
-void prepareStartPacket(char *buffer, clientInfo_t *client);
-
-void sleep_ms(int milliseconds);
-
-unsigned int getPlayerCount();
 
 /*
  * Enumerations
@@ -103,8 +76,47 @@ enum playerType_t {
 
 //Debug level enumerations
 enum debugLevel_t {
-    INFO, VERBOSE, DEBUG, DEBUGMAX
+    INFO, VERBOSE, DEBUG
 };
+
+/*
+ * Declarations
+ */
+typedef struct clientInfo clientInfo_t;
+
+void exitWithMessage(char error[]);
+
+void *handle_connection(void *socket_desc);
+
+void processArgs(int argc, char *argv[]);
+
+void *safe_malloc(size_t);
+
+int startServer();
+
+void initPacket(char *buffer, ssize_t *bufferPointer);
+
+void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client);
+
+clientInfo_t *initClientData(int, struct in_addr);
+
+void sendPlayerDisconnect(clientInfo_t *client);
+
+void *gameController(void *a);
+
+void prepareStartPacket(char *buffer, clientInfo_t *client);
+
+void sleep_ms(int milliseconds);
+
+unsigned int getPlayerCount();
+
+void stripSpecialCharacters(int *messageLength, char *message);
+
+void processMove(clientInfo_t *client, enum clientMovement_t move);
+
+void sendMessage(int playerId, int messageLength, char *message);
+
+void processQuit(clientInfo_t *client);
 
 /*
  * Structs
@@ -434,6 +446,8 @@ void processNewPlayer(clientInfo_t *clientInfo) {
     }
     if ((int) buffer[0] == JOIN) {
         memcpy(clientInfo->name, buffer + PACKET_TYPE_SIZE, MAX_NICK_SIZE);
+        int nameSize = 20;
+        stripSpecialCharacters(&nameSize, clientInfo->name);
         if (isNameUsed(clientInfo->name)) {
             initPacket(buffer, &bufferPointer);
             buffer[0] = ACK;
@@ -566,35 +580,42 @@ void *playerSender(void *clientP) {
 void *playerReceiver(void *client) {
     clientInfo_t *clientInfo = (clientInfo_t *) client;
     while (true) {
-//       char buffer[MAX_PACKET_SIZE];
-//       memset(buffer, 0, MAX_PACKET_SIZE);
-//       int bufferPointer = 0;
-//       int messageLength = 0;
-//       receivePacket(buffer, bufferPointer, clientInfo->sock);
-//       switch (buffer[0]){
-//           case MOVE:
-//               /*
-//                * 1-4 Player ID (Not really required in stateful connection)
-//                * 5 Player Move
-//                */
-//               processMove(clientInfo, (enum clientMovement_t)buffer[5] );
-//               break;
-//           case MESSAGE:
-//               /*
-//                * 1-4 Player ID (Not really required in stateful connection)
-//                * 5-8 Message length
-//                * 9-... Message
-//                */
-
-//               processMessage(clientInfo, messageLength, buffer+9);
-//               break;
-//           case QUIT:
-//               /*
-//                * 1-4 Player ID (Not really required in stateful connection)
-//                */
-//               processQuit(clientInfo);
-//               break;
-//       }
+        char buffer[MAX_PACKET_SIZE];
+        memset(buffer, 0, MAX_PACKET_SIZE);
+        ssize_t bufferPointer = 0; //Stores received packet size
+        int messageLength = 0;
+        receivePacket(buffer, &bufferPointer, clientInfo->sock);
+        switch (buffer[0]) {
+            case MOVE:
+                /*
+                 * 1-4 Player ID (Not really required in stateful connection)
+                 * 5 Player Move
+                 */
+                processMove(clientInfo, (enum clientMovement_t) buffer[5]);
+                break;
+            case MESSAGE:
+                /*
+                 * 1-4 Player ID (Not really required in stateful connection)
+                 * 5-8 Message length
+                 * 9-... Message
+                 */
+                memcpy((void *) &messageLength, (void *) &buffer + 5, sizeof(int)); //Read message length
+                if (bufferPointer - 9 > messageLength) {
+                    if (debugLevel >= VERBOSE) {
+                        printf("VERBOSE:\t%s is sending incorrect length messages (they are bigger than messageLength) DISCARDING\n",
+                               clientInfo->name);
+                    }
+                } else {
+                    sendMessage(clientInfo->id, messageLength, buffer + 9);
+                }
+                break;
+            case QUIT:
+                /*
+                 * 1-4 Player ID (Not really required in stateful connection)
+                 */
+                processQuit(clientInfo);
+                break;
+        }
 
         sleep_ms(TICK_FREQUENCY);
     }
@@ -605,12 +626,68 @@ void processMove(clientInfo_t *client, enum clientMovement_t move) {
 
 }
 
-void processMessage(clientInfo_t *client, int messageLength, char *message) {
+/**
+ * Sends a special character stripped message to all players, playerId must be validated before sending
+ */
+void sendMessage(int playerId, int messageLength, char *message) {
+    char buffer[MAX_PACKET_SIZE];
+    if (MAX_PACKET_SIZE < messageLength) {
+        if (debugLevel >= VERBOSE) {
+            printf("VERBOSE:\t%d is sending too large messages\n", playerId);
+        }
+    }
+    stripSpecialCharacters(&messageLength, message);
+
+    //Prepare MESSAGE packet
+    /*
+     * 1-4 Player ID (Not really required in stateful connection)
+     * 5-8 Message length
+     * 9-... Message
+     */
+    buffer[0] = MESSAGE;
+    memcpy(buffer + 1, &playerId, sizeof(int)); // Player ID
+    memcpy(buffer + 5, &messageLength, sizeof(int)); // Message length
+    for (int i = 0; i < messageLength; i++) {
+        buffer[i + 9] = message[i];     // Message
+    }
+    int bufferPointer = PACKET_TYPE_SIZE + sizeof(int) + sizeof(int) + messageLength;
+
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i]) {
+            sendPacket(buffer, bufferPointer, clientArr[i]);
+        }
+    }
 
 }
 
 void processQuit(clientInfo_t *client) {
+    //Prepare PLAYER_DISCONNECTED packet
+    char buffer[5];
+    buffer[0] = PLAYER_DISCONNECTED;
+    memcpy(buffer + 1, &client->id, sizeof(int)); // Player ID
+    sendMassPacket(buffer,5,client);
+    //TODO Clean up player data (pthread_kill);
 
+}
+
+/**
+ * Removes special characters (i.e \n) which should never be sent to clients
+ * Should be used for messages and player names
+ * Resulting string stored in message with messageLength updated
+ */
+void stripSpecialCharacters(int *messageLength, char *message) {
+    int newMessageLength = 0;
+    char newMessage[MAX_PACKET_SIZE];
+    for (int i = 0; i < *messageLength; i++) {
+        if (message[i]>= 32 && message[i]<=126) {
+            newMessage[newMessageLength++] = message[i];
+        }
+    }
+    newMessage[newMessageLength++] = '\0'; //Make sure that the message ends with null character
+    *messageLength = newMessageLength;
+    memset(message, 0, (size_t)*messageLength);
+    memcpy(message, newMessage, (size_t)newMessageLength);
 }
 
 /**
@@ -734,6 +811,11 @@ void findStartingPosition(clientInfo_t *client) {
                         for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? j : j - SPAWNPOINT_TRAVERSAL_RANGE;
                              jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
                             clientInfo_t *contender = isSomeoneThere(jj, ii);
+                            //Do not spawn on friendlies
+                            if (contender && contender->playerType == Pacman) {
+                                continue;
+                            }
+                            //Make sure that player is not spawned near enemy
                             if (contender && contender->playerType == Ghost) {
                                 enemyFound = true;
                                 break;
@@ -768,6 +850,11 @@ void findStartingPosition(clientInfo_t *client) {
                         for (int jj = (j - SPAWNPOINT_TRAVERSAL_RANGE < 0) ? j : j - SPAWNPOINT_TRAVERSAL_RANGE;
                              jj < j + SPAWNPOINT_TRAVERSAL_RANGE && j + SPAWNPOINT_TRAVERSAL_RANGE <= cols; jj++) {
                             clientInfo_t *contender = isSomeoneThere(jj, ii);
+                            //Do not spawn on friendlies
+                            if (contender && contender->playerType == Ghost) {
+                                continue;
+                            }
+                            //Make sure that player is not spawned near enemy
                             if (contender && contender->playerType == Pacman) {
                                 enemyFound = true;
                                 break;
