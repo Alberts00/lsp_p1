@@ -18,6 +18,7 @@
 #include <stdbool.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <math.h>
 
 #ifdef WIN32
 #include <windows.h>
@@ -45,6 +46,10 @@
 #define SCORE_POINTS 100                //Points given for encountering SCORE tile
 #define POWERUP_PowerPellet 120         //Ticks before PowerPellet expires
 #define POWERUP_Invincibility 120       //Ticks before Invincibility expires
+#define POWERUP_START_Invincibility 60  //Ticks before game start Invincibility expires
+#define TILE_COMPARISION_EPSILON 0.5f
+#define SCORE_GHOST_KILL 1              // Score Ghost gets for killing Pacman
+#define SCORE_PACMAN_KILL 1             // Score Pacman gets for killing Ghost
 
 /*
  * Enumerations
@@ -71,7 +76,7 @@ enum clientMovement_t {
 
 // Player state enumerations
 enum playerState_t {
-    NORMAL, DEAD
+    NORMAL, DEAD, powerupPowerPellet = 3, powerupInvincibility = 4
 };
 // Player type enumerations
 enum playerType_t {
@@ -124,31 +129,34 @@ void processQuit(clientInfo_t *client);
 
 void processTick(unsigned long int TICK);
 
+bool sameTile(clientInfo_t *a, clientInfo_t *b);
+
 /*
  * Structs
  */
 
-typedef struct clientInfo {
-    int sock;
-    int id;
-    struct in_addr ip;
-    char name[20];
-    enum playerType_t playerType;
-    enum playerState_t playerState;
-    enum clientMovement_t clientMovement;
-    float x;
-    float y;
-    int score;
-    bool active;
+typedef struct clientInfo {                 // Holds client specific data
+    int sock;                               // Client TCP socket
+    int id;                                 // Client ID
+    struct in_addr ip;                      // Client IP address
+    char name[20];                          // Client name
+    enum playerType_t playerType;           // Client type (initialized if active=true)
+    enum playerState_t playerState;         // Client state (initialized if active=true)
+    enum clientMovement_t clientMovement;   // Client movement (UP/DOWN/LEFT/RIGHT)
+    unsigned int powerupTick;               // Ticks before client powerup expires
+    float x;                                // x coordinates
+    float y;                                // x coordinates
+    int score;                              // Score
+    bool active;                            // Tells if client type, state has been initialized
 } clientInfo_t;
 
 
-typedef struct mapList {
+typedef struct mapList {                            //Contains list of loaded maps, populated by initMaps
     char filename[FILENAME_MAX];
-    int width;     //x
-    int height;    //y
-    bool active;
-    char map[MAX_MAP_WIDTH][MAX_MAP_HEIGHT];
+    int width;                                      //x
+    int height;                                     //y
+    char map[MAX_MAP_WIDTH][MAX_MAP_HEIGHT];        //Map during game, might change during gameplay
+    char mapDefault[MAX_MAP_WIDTH][MAX_MAP_HEIGHT]; //Map which was loded from file
     struct mapList *next;
 } mapList_t;
 
@@ -168,7 +176,7 @@ enum debugLevel_t debugLevel;           // Holds debugging level of the server (
 
 void *safe_malloc(size_t size) {
     void *p = malloc(size);
-    if (!p) { //Ja alokācija neizdevās, izdrukājam iemeslu, kurš iegūts no errno
+    if (!p) {
         fprintf(stderr, "%s\n", strerror(errno));
 
         exit(EXIT_FAILURE);
@@ -214,7 +222,7 @@ void signal_callback_handler(int signum) {
     exit(signum);
 }
 
-/*
+/**
  * Returns client pointer to array or NULL if no free spots
  */
 clientInfo_t *findClientSpot(clientInfo_t *client) {
@@ -228,7 +236,7 @@ clientInfo_t *findClientSpot(clientInfo_t *client) {
     return NULL;
 }
 
-/*
+/**
  * Returns true if the name is in use, false otherwise
  */
 bool isNameUsed(char *name) {
@@ -241,7 +249,7 @@ bool isNameUsed(char *name) {
     return false;
 }
 
-/*
+/**
  * Returns initialized client struct
  */
 clientInfo_t *initClientData(int sock, struct in_addr ip) {
@@ -251,11 +259,17 @@ clientInfo_t *initClientData(int sock, struct in_addr ip) {
     client->id = CLIENT_ID_ITERATOR++;
     client->sock = sock;
     client->ip = ip;
-    client->active = false;
+    client->active = false; //Active will be set to true only when game starts
     return client;
 }
 
-
+/**
+ * Main server thread which listens to incoming connections
+ * Creates a new gameController thread which control the game process
+ * If a new client connection is received a new thread (handle_connection) is created which authorizes the client and
+ * creates client specific packet receiver (playerReceiver) and packet sender thread (playerSender) in which game data
+ * is being sent
+ */
 int startServer() {
     int socket_desc, client_sock, c;
     struct sockaddr_in server, client;
@@ -374,7 +388,7 @@ void debugPacket(enum packet_t packetType, const char *caller, const char *error
  *  Exits the thread
  */
 void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
-    printf("%s: %s\n", inet_ntoa(client->ip), errormsg);
+    printf("INFO: %s: %s\n", inet_ntoa(client->ip), errormsg);
     close(client->sock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (client == clientArr[i]) {
@@ -914,6 +928,13 @@ void prepareStartPacket(char *buffer, clientInfo_t *client) {
     // Make sure that the player is alive at the start of the game
     client->playerState = NORMAL;
     client->active = true;
+    client->powerupTick = 0;
+
+    // If player is a Pacman start with invincibility
+    if (client->playerType == Pacman) {
+        client->powerupTick = POWERUP_START_Invincibility;
+        client->playerState = powerupInvincibility;
+    }
 
     // Finds suitable starting position for client
     findStartingPosition(client);
@@ -944,72 +965,151 @@ void *gameController(void *a) {
 }
 
 /**
+ * Function which compares two player coordinates and returns true if both of them are to be
+ * considered to be on the same tile
+ */
+bool sameTile(clientInfo_t *a, clientInfo_t *b) {
+    return (int) a->x == (int) b->x && (int) a->y == (int) b->y;
+}
+
+/**
+ * Receives client and returns the mapObject client is standing on
+ */
+enum mapObjecT_t whichMapObject(clientInfo_t *a) {
+    return (enum mapObjecT_t) MAP_CURRENT->map[(int) a->y][(int) a->x];
+}
+
+/**
+ * Resets map object to None on the tile which client is standing on
+ */
+void resetMapObject(clientInfo_t *a) {
+    MAP_CURRENT->map[(int) a->y][(int) a->x] = None;
+}
+
+/**
  * Collision detection, powerup and player movement function
  */
 void processTick(unsigned long int TICK) {
-    //Check of player has any powerups and if there are decrease their tick
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        clientInfo_t *player = clientArr[i];
+        if (player && player->active && player->playerState != DEAD) {
 
-    //Find if a player is eligible for powerup by stepping on it
+            // Check if player has any powerups and if there are decrease their tick
+            if (player->playerState != NORMAL) {
+                player->powerupTick--; //Decrease tick
+                if (player->powerupTick == 0)
+                    player->playerState = NORMAL; //If the tick is at 0 make sure that playerState is NORMAL
+            }
 
-
-    //Check if player has a collision with something
-
-    /*
-     * Ghost -> Pacman
-     * Pacman DEAD if he does not have invincibility
-     */
-
-
-
-    /* Pacman- -> Powerup
-     * Check what kind of powerup it is
-     * Same as existing - reset powerup ticks to default
-     * If it is powerPellet override invincibility and adjust ticks
-     * If it is invincibility adjust ticks
-     * If it is SCORE increase players score
-     * Remove powerup from tile
-     */
+            // Check if player has a collision with something
 
 
-    /* Ghost -> Powerup (do we even need this?)
-     *  ??? maybe he can eat powerPellet for more speed
-     */
+            /*
+             * Ghost -> Pacman
+             * Pacman DEAD if he does not have invincibility or powerpellet
+             */
+            if (player->playerType == Ghost) {
+                for (int j = 0; j < MAX_PLAYERS; j++) {
+                    if (clientArr[j] && clientArr[j]->active && clientArr[j]->playerType == Pacman) { //Find all Pacmans
+                        clientInfo_t *pacman = clientArr[j];
+                        if (pacman->playerState == NORMAL) { //Make sure that Pacman doesn't have any powerups
+                            if (sameTile(pacman,
+                                         player)) { //If both of them are on the same tile kill pacman and increase Ghost score
+                                pacman->playerState = DEAD;
+                                player->score += SCORE_GHOST_KILL;
+                            }
+                        }
+                    }
+                }
+            }
 
 
-    /* Pacman-> Dot
-     *  If tile is a dot increase players score, remove dot
-     */
+            /* Pacman- -> mapObject
+             * Check what kind of mapObject it is
+             * If it is powerPellet override invincibility and adjust ticks
+             * If it is invincibility adjust ticks
+             * If it is SCORE increase players score
+             * If it is DOT increase players score
+             * Remove mapObject from tile -> (None)
+             */
+            if (player->playerType == Pacman) {
+                if (whichMapObject(player) == PowerPellet) {
+                    player->playerState = powerupPowerPellet;
+                    player->powerupTick = POWERUP_PowerPellet;
+
+                } else if (whichMapObject(player) == Invincibility) {
+                    player->playerState = powerupInvincibility;
+                    player->powerupTick = POWERUP_Invincibility;
+                } else if (whichMapObject(player) == SCORE) {
+                    player->score += SCORE_POINTS;
+                } else if (whichMapObject(player) == Dot) {
+                    player->score += DOT_POINTS;
+                }
+                resetMapObject(player);
+            }
 
 
-
-    /* Ghost -> Dot (do we even need this?)
-     * ???
-     */
-
-    /*
-     * Pacman -> Ghost
-     * If Pacman has PowerPellet and they are on the same tile GHOST=DEAD
-     */
+            /* Ghost -> mapObject (do we even need this?)
+             *  ??? maybe he can eat powerPellet for more speed
+             */
 
 
+            /*
+             * Pacman -> Ghost
+             * If Pacman has PowerPellet and they are on the same tile GHOST=DEAD
+             */
+            if (player->playerType == Pacman) {
+                if (player->playerState == powerupPowerPellet) {
+                    for (int j = 0; j < MAX_PLAYERS; j++) {
+                        if (clientArr[j] && clientArr[j]->active && clientArr[j]->playerType == Ghost) {
+                            clientInfo_t *ghost = clientArr[j];
+                            if (sameTile(player, ghost)) {
+                                ghost->playerState = DEAD;
+                                player->score += SCORE_PACMAN_KILL;
+                            }
+                        }
+                    }
+                }
+            }
 
-    /* Both -> Wall
-     * If in the next tile of player MOVE is a wall do not change its position
-     * else move the player by TICK_MOVEMENT
-     */
+
+            /* Both -> Wall
+             * Move the player by TICK_MOVEMENT
+             * If the player is standing on a wall move him back
+             */
+            if (player->clientMovement == UP) {
+                player->y += TICK_MOVEMENT;
+                if (whichMapObject(player) == Wall){
+                    player->y -= TICK_MOVEMENT;
+                }
+            } else if (player->clientMovement == DOWN) {
+                player->y -= TICK_MOVEMENT;
+                if (whichMapObject(player) == Wall){
+                    player->y += TICK_MOVEMENT;
+                }
+            } else if (player->clientMovement == LEFT) {
+                player->x -= TICK_MOVEMENT;
+                if (whichMapObject(player) == Wall){
+                    player->x += TICK_MOVEMENT;
+                }
+            } else if (player->clientMovement == RIGHT) {
+                player->x += TICK_MOVEMENT;
+                if (whichMapObject(player) == Wall){
+                    player->x -= TICK_MOVEMENT;
+                }
+            }
 
 
-    //Spawn a powerup in almost random position
+            //Spawn a powerup in almost random position
 
-
-
+        }
+    }
 }
 
 void addMap(FILE *mapfile, char name[256]) {
     mapList_t *map = safe_malloc(sizeof(mapList_t));
     // Initialize map metadata
     map->next = NULL;
-    map->active = false;
     map->height = 0;
     map->width = 0;
     memset(map->map, 0, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
@@ -1091,6 +1191,17 @@ void initMaps() {
     }
     if (MAP_HEAD == NULL) {
         exitWithMessage("No maps loaded");
+    }
+}
+
+/**
+ * Resets map tiles to default values since they have changed during game
+ */
+void reloadMaps() {
+    mapList_t *tmp = MAP_HEAD;
+    while (tmp) {
+        memcpy(tmp->map, tmp->mapDefault, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
+        tmp = tmp->next;
     }
 }
 
