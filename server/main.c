@@ -936,7 +936,7 @@ void *gameController(void *a) {
                 if (debugLevel >= DEBUG) printf("DEBUG:\tGame started, sending START packets\n");
                 sendStartPackets();
             }
-            processTick();
+            processTick(TICK);
             TICK += 1;
             if (debugLevel >= DEBUG) printf("DEBUG:\tTICK %lu\n", TICK);
         }
@@ -1029,7 +1029,7 @@ void addMap(FILE *mapfile, char name[256]) {
     // Reads the map data into 2D array
     char c;
     int x = 0;
-    int y = 1;
+    int y = 0;
     do {
         c = getc(mapfile);
         if (c == '\n') {
@@ -1051,7 +1051,7 @@ void addMap(FILE *mapfile, char name[256]) {
         }
     } while (c != EOF);
     map->width = x;
-    map->height = y;
+    map->height = ++y;
     if (debugLevel >= VERBOSE) printf("VERBOSE:\tMap %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
 
 }
