@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <signal.h>
 #include <ncurses.h>
+#include <math.h>
 
 /**
  * GLOBAL VARIABLES
@@ -30,6 +31,7 @@ WINDOW *errorWindow;
 int mapW;
 int mapH;
 int notificationCounter;
+int myId;
 
 /**
  * ENUMS
@@ -48,6 +50,15 @@ enum mapObjecT_t {
     None, Dot, Wall, PowerPellet, Invincibility, Score
 };
 
+// Player state enumerations
+enum playerState_t {
+    NORMAL, DEAD
+};
+// Player type enumerations
+enum playerType_t {
+    Pacman, Ghost
+};
+
 /**
  * METHOD DECLARATIONS
  */
@@ -62,6 +73,7 @@ void writeToWindow(WINDOW*, int, int, char[]);
 void windowDeleteAction(WINDOW*);
 void waitForStartPacket(int*, int*);
 void drawMap(char*);
+void drawPlayers(char*);
 void createNotificationWindow();
 void epicDebug(char*);
 
@@ -142,6 +154,7 @@ int main(int argc, char *argv[]) {
     mapW = 0;
     mapH = 0;
     notificationCounter = 0;
+    myId = 0;
 
     initCurses();
 
@@ -168,8 +181,6 @@ int main(int argc, char *argv[]) {
 //    sleep(100);
 
 
-//    strcpy(serverAddress, "127.0.0.1");
-//    strcpy(serverPort, "8888");
     connectionDialog(serverAddress, serverPort);
 
     //Create socket
@@ -265,10 +276,13 @@ void connectionDialog(char *address, char *port) {
     wmove(connectionWindow, 6, 6);
 //    scanf("%s", port);
 
-    strcpy(address, "127.0.0.1");
-//    strcpy(address, "95.68.71.51");
-//    strcpy(address, "81.198.119.38");
+//    strcpy(address, "127.0.0.1");
+//    strcpy(address, "95.68.71.51"); // Alberts
+//    strcpy(address, "149.202.149.77"); // Alberts
+//    strcpy(address, "81.198.119.38"); // Arnolds
+    strcpy(address, "192.168.0.103"); // VM
     strcpy(port, "8888");
+//    strcpy(port, "2042"); // Arnolds
 }
 
 /**
@@ -322,6 +336,9 @@ void receiveJoinResponse() {
             exitWithMessage("Something went wrong! Please try again later.");
         }
 
+        // Save client's character ID
+        myId = responseCode;
+
         windowDeleteAction(connectionWindow);
         refresh();
     }
@@ -336,11 +353,6 @@ void waitForStartPacket(int *startX, int *startY) {
     char startPacket[MAX_PACKET_SIZE];
 
     while ((readSize = recv(sock, startPacket, MAX_PACKET_SIZE, 0)) > 0) {
-        char zajebal[500] = {0};
-        sprintf(zajebal, "rcvd: %d\n", (int)startPacket[0]);
-        epicDebug(zajebal);
-
-
         waddch(mainWindow, '.');
         wrefresh(mainWindow);
 
@@ -390,20 +402,7 @@ void *listenToServer(void *conn) {
     fprintf(f, "%s\n", "WAITING???");
 
     while ((readSize = recv(sock, message, MAX_PACKET_SIZE, 0)) > 0) {
-//        fprintf(f, "%s\n", "Received some shit packet");
-//        fprintf(f, "%i\n", (int)readSize);
-
         int packetType = (int)message[0];
-
-
-
-        char type[500] = {0};
-
-        sprintf(type, "received packet %d", packetType);
-
-//        epicDebug(type);
-
-        writeToWindow(notificationWindow, ++notificationCounter, 0, type);
 
         switch (packetType) {
             case JOINED:
@@ -417,6 +416,10 @@ void *listenToServer(void *conn) {
                 break;
             case MAP:
                 drawMap(message);
+                break;
+            case PLAYERS:
+                drawPlayers(message);
+                break;
             default:
                 break;
         }
@@ -433,44 +436,6 @@ void *listenToServer(void *conn) {
     }
 
     return 0;
-
-//    int sock = clientInfo.clientSock;
-//    ssize_t read_size;
-//    char *message, client_message[2000], *new_message;
-//
-//    //Send some messages to the client
-//    message = "Greetings! I am your connection handler\n";
-//    write(sock, message, strlen(message));
-//
-//    message = "Now type something and i shall repeat what you type \n";
-//    write(sock, message, strlen(message));
-//
-//    //Receive a message from client
-//    while ((read_size = recv(sock, client_message, 2000, 0)) > 0) {
-//        //end of string marker
-//        client_message[read_size] = '\0';
-//        sscanf(client_message, "name: %s", clientInfo.name);
-//
-//        for (int i = 0; i < MAX_PLAYERS; i++) {
-//            if (clientSockets[i] > 0) {
-//                asprintf(&new_message,"%s (ID: %d) sent: %s\n", clientInfo.name, clientInfo.id, client_message);
-//                write(clientSockets[i], new_message, strlen(new_message));
-//            }
-//        }
-//
-//        //clear the message buffer
-//        memset(client_message, 0, 2000);
-//    }
-//
-//    if (read_size == 0) {
-//        puts("Client disconnected");
-//        fflush(stdout);
-//    }
-//    else if (read_size == -1) {
-//        perror("recv failed");
-//    }
-//
-//    return 0;
 }
 
 /**
@@ -508,6 +473,10 @@ void initCurses() {
 void drawMap(char *map) {
     writeToWindow(notificationWindow, ++notificationCounter, 1, "Received map from the server");
 
+    map++;
+    start_color();
+    init_pair(4, COLOR_WHITE, COLOR_BLACK);
+
     for (int i = 0; i < mapH; ++i) {
         for (int j = 0; j < mapW; ++j) {
             // +1 to the positions is needed so that graphics do not overlap the world box
@@ -515,7 +484,9 @@ void drawMap(char *map) {
 
             switch (blockType) {
                 case Wall:
+                    wattron(mainWindow, COLOR_PAIR(1)|A_BOLD);
                     mvwaddch(mainWindow, i+1, j+1, 97 | A_ALTCHARSET);
+                    wattroff(mainWindow, COLOR_PAIR(1)|A_BOLD);
                     break;
                 case Dot:
                     mvwaddch(mainWindow, i+1, j+1, '.');
@@ -537,6 +508,80 @@ void drawMap(char *map) {
 
     wrefresh(mainWindow);
     refresh();
+}
+
+/**
+ * Main method for player drawing
+ *
+ * @param mapH
+ * @param mapW
+ * @param map
+ */
+void drawPlayers(char *players) {
+    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received players from the server");
+
+    players++;
+
+    int playerCount;
+    memcpy((void *) &playerCount, (void *) *&players, sizeof(playerCount));
+
+    players += sizeof(playerCount);
+
+    int playerId;
+    float playerX, playerY;
+    enum playerState_t playerState;
+    enum playerType_t playerType;
+
+    // Get information about each player and draw the character
+    for (int i = 0; i < playerCount; ++i) {
+        memcpy((void *) &playerId, (void *) *&players, sizeof(playerId));
+        players += sizeof(playerId);
+        memcpy((void *) &playerX, (void *) *&players, sizeof(playerX));
+        players += sizeof(playerX);
+        memcpy((void *) &playerY, (void *) *&players, sizeof(playerY));
+        players += sizeof(playerY);
+        memcpy((void *) &playerState, (void *) *&players, 1);
+        players++;
+        memcpy((void *) &playerType, (void *) *&players, 1);
+        players++;
+
+        // Convert to integers (and round) as sadly we can not represent floats in ncurses
+        int integerPosX = (int)roundf(playerX);
+        int integerPosY = (int)roundf(playerY);
+
+        start_color();
+
+        // Initialize color levels and color pairs
+        init_color(COLOR_GREEN, 0, 700, 0);
+        init_color(COLOR_RED, 700, 0, 0);
+        init_color(COLOR_YELLOW, 500, 500, 0);
+
+        init_pair(1, COLOR_GREEN, COLOR_BLACK);
+        init_pair(2, COLOR_RED, COLOR_BLACK);
+        init_pair(3, COLOR_YELLOW, COLOR_BLACK);
+
+        int usePair = 1;
+
+        // Determine which pair to use
+        if(playerType == Ghost) {
+            usePair = 2;
+        }
+        if(playerId == myId) {
+            usePair = 3;
+        }
+
+        // Draw player and set it's color
+        wattron(mainWindow, COLOR_PAIR(usePair));
+        if(playerType == Ghost) {
+            mvwaddch(mainWindow, integerPosY+1, integerPosX+1, '&');
+        } else {
+            mvwaddch(mainWindow, integerPosY+1, integerPosX+1, '@');
+        }
+        wattroff(mainWindow, COLOR_PAIR(usePair));
+    }
+
+    refresh();
+    wrefresh(mainWindow);
 }
 
 /**
