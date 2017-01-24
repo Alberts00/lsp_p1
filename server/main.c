@@ -36,11 +36,11 @@
 #define MAX_MAP_HEIGHT 100
 #define MAX_MAP_WIDTH 100
 #define MIN_PLAYERS 2
-#define TICK_FREQUENCY 1000                   // Time between ticks in miliseconds
+#define TICK_FREQUENCY 50                   // Time between ticks in miliseconds
 #define GHOST_RATIO 1                         // Ratio of ghosts per one pacman
 #define PACMAN_RATIO 2                        // Ratio of Pacmans per one ghost
 #define SPAWNPOINT_TRAVERSAL_RANGE 5          // Nearby blocks to be checked for enemies when spawning
-#define TICK_MOVEMENT 1.0f                    // Player movement per each tick
+#define TICK_MOVEMENT 0.5f                    // Player movement per each tick
 #define DOT_POINTS 10                         // Points given for encountering DOT tole
 #define SCORE_POINTS 100                      // Points given for encountering SCORE tile
 #define POWERUP_PowerPellet_TICKS 120         // Ticks before PowerPellet expires
@@ -701,7 +701,7 @@ void *gameController(void *a) {
 
             } // No more ghosts pacman win
 
-            if (gameEnd && TICK>3) {
+            if (gameEnd && TICK > 3) {
                 /*
                  * Prepare END packet
                 */
@@ -849,17 +849,53 @@ void processNewPlayer(clientInfo_t *clientInfo) {
 void *playerSender(void *clientP) {
     clientInfo_t *client = (clientInfo_t *) clientP;
     while (true) {
+        int clientTicker = 0; //Used to send players only per X packets
         while (gameStarted) {
             pthread_mutex_lock(&gameStartedock);
+            pthread_mutex_lock(&clientArrLock);
+            int bufferPointer = 1;
+            char buffer[MAX_MAP_HEIGHT * MAX_MAP_WIDTH + PACKET_TYPE_SIZE];
+            int objectCount = 0;
+
+            if (clientTicker % 5 == 0) {
+                // Prepare score packet
+                /*
+                 * 0 - Packet type
+                 * 1 - 4 Object count
+                 * 5 - 8 Player score
+                 * 9 - 12 Player ID
+                 * Repeat player score and player ID for each player
+                 */
+                objectCount = 0;
+                memset(buffer, 0, MAX_PACKET_SIZE);
+                buffer[0] = SCORE;
+                bufferPointer = 5;
+                for (int i = 0; i < MAX_PLAYERS; i++) {
+                    if (clientArr[i] && clientArr[i]->active) {
+                        memcpy(buffer + bufferPointer, &clientArr[i]->score, sizeof(int)); //Player score
+                        bufferPointer += sizeof(int);
+                        memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player id
+                        bufferPointer += sizeof(int);
+                    }
+                }
+                memcpy(buffer + 1, &objectCount, sizeof(int));
+                sendPacket(buffer, bufferPointer, client);
+                pthread_mutex_unlock(&clientArrLock);
+                pthread_mutex_unlock(&gameStartedock);
+                clientTicker++;
+                sleep_ms(TICK_FREQUENCY);
+                continue;
+
+            }
             // Prepare MAP packet
             /*
              * 0 - PACKET TYPE
              * 1- height*width+1 Map data
              * Map data doesn't require map size since it is previously sent in the START packet
              */
-            char buffer[MAX_MAP_HEIGHT * MAX_MAP_WIDTH + PACKET_TYPE_SIZE];
+            bufferPointer = 1;
+            memset(buffer, 0, MAX_PACKET_SIZE);
             buffer[0] = MAP;
-            int bufferPointer = 1;
             for (int i = 0; i < MAP_CURRENT->height; i++) {
                 for (int j = 0; j < MAP_CURRENT->width; j++) {
                     buffer[bufferPointer] = MAP_CURRENT->map[i][j];
@@ -867,6 +903,8 @@ void *playerSender(void *clientP) {
                 }
             }
             sendPacket(buffer, bufferPointer, client);
+
+
             // Prepare PLAYERS packet
             /*
              * 0 - PACKET TYPE
@@ -876,9 +914,8 @@ void *playerSender(void *clientP) {
 
             memset(buffer, 0, MAX_PACKET_SIZE);
             buffer[0] = PLAYERS;
-            int objectCount = 0; //Amount of player objects
+            objectCount = 0; //Amount of player objects
             bufferPointer = 5; //Start of the player information in buffer
-            pthread_mutex_lock(&clientArrLock);
             for (int i = 0; i < MAX_PLAYERS; i++) {
                 if (clientArr[i] && clientArr[i]->active) {
                     memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player ID
@@ -893,30 +930,11 @@ void *playerSender(void *clientP) {
                 }
             }
             memcpy(buffer + PACKET_TYPE_SIZE, &objectCount, sizeof(int)); // Object count
+
             sendPacket(buffer, bufferPointer, client);
 
-            // Prepare score packet
-            /*
-             * 0 - Packet type
-             * 1 - 4 Object count
-             * 5 - 8 Player score
-             * 9 - 12 Player ID
-             * Repeat player score and player ID for each player
-             */
-            objectCount = 0;
-            memset(buffer, 0, MAX_PACKET_SIZE);
-            buffer[0] = SCORE;
-            bufferPointer = 5;
-            for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (clientArr[i] && clientArr[i]->active) {
-                    memcpy(buffer + bufferPointer, &clientArr[i]->score, sizeof(int)); //Player score
-                    bufferPointer += sizeof(int);
-                    memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player id
-                    bufferPointer += sizeof(int);
-                }
-            }
-            memcpy(buffer + 1, &objectCount, sizeof(int));
-            sendPacket(buffer, bufferPointer, client);
+
+            clientTicker++;
             pthread_mutex_unlock(&clientArrLock);
             pthread_mutex_unlock(&gameStartedock);
             sleep_ms(TICK_FREQUENCY);
