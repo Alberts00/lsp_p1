@@ -1,5 +1,6 @@
 /*
  * LSP Kursa projekts
+ * Serveris
  * Alberts Saulitis
  * Viesturs Ružāns
  *
@@ -13,12 +14,10 @@
 #include <pthread.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <dirent.h>
-#include <ctype.h>
-#include <math.h>
 
 #ifdef WIN32
 #include <windows.h>
@@ -36,20 +35,21 @@
 #define MAX_NICK_SIZE 20
 #define MAX_MAP_HEIGHT 100
 #define MAX_MAP_WIDTH 100
-#define MIN_PLAYERS 1
-#define TICK_FREQUENCY 1000             // Time between ticks in miliseconds
-#define GHOST_RATIO 1
-#define PACMAN_RATIO 1
-#define SPAWNPOINT_TRAVERSAL_RANGE 3    // Nearby blocks to be checked for enemies when spawning
-#define TICK_MOVEMENT 0.2f              // Player movement per each tick
-#define DOT_POINTS 10                   //Points given for encountering DOT tole
-#define SCORE_POINTS 100                //Points given for encountering SCORE tile
-#define POWERUP_PowerPellet 120         //Ticks before PowerPellet expires
-#define POWERUP_Invincibility 120       //Ticks before Invincibility expires
-#define POWERUP_START_Invincibility 60  //Ticks before game start Invincibility expires
-#define TILE_COMPARISION_EPSILON 0.5f
-#define SCORE_GHOST_KILL 1              // Score Ghost gets for killing Pacman
-#define SCORE_PACMAN_KILL 1             // Score Pacman gets for killing Ghost
+#define MIN_PLAYERS 2
+#define TICK_FREQUENCY 1000                   // Time between ticks in miliseconds
+#define GHOST_RATIO 1                         // Ratio of ghosts per one pacman
+#define PACMAN_RATIO 2                        // Ratio of Pacmans per one ghost
+#define SPAWNPOINT_TRAVERSAL_RANGE 5          // Nearby blocks to be checked for enemies when spawning
+#define TICK_MOVEMENT 1.0f                    // Player movement per each tick
+#define DOT_POINTS 10                         // Points given for encountering DOT tole
+#define SCORE_POINTS 100                      // Points given for encountering SCORE tile
+#define POWERUP_PowerPellet_TICKS 120         // Ticks before PowerPellet expires
+#define POWERUP_Invincibility_TICKS 120       // Ticks before Invincibility expires
+#define POWERUP_START_Invincibility_TICKS 60  // Ticks count of Invincibility upon player spawn
+#define SCORE_GHOST_KILL 1                    // Score Ghost gets for killing Pacman
+#define SCORE_PACMAN_KILL 1                   // Score Pacman gets for killing Ghost
+#define POWERUP_PowerPellet_SPAWN_TICKS 500      // Amount of ticks between spawning powerPellet
+#define POWERUP_Invincibility_SPAWN_TICKS 250    // Amount of ticks between spawning Invincibility
 
 /*
  * Enumerations
@@ -63,6 +63,7 @@ enum connectionError_t {
 enum packet_t {
     JOIN, ACK, START, END, MAP, PLAYERS, SCORE, MOVE, MESSAGE, QUIT, JOINED, PLAYER_DISCONNECTED
 };
+
 
 //Map object enumerations
 enum mapObjecT_t {
@@ -95,41 +96,59 @@ typedef struct clientInfo clientInfo_t;
 
 void exitWithMessage(char error[]);
 
-void *handle_connection(void *socket_desc);
+void *handle_connection(void *);
 
 void processArgs(int argc, char *argv[]);
 
-void *safe_malloc(size_t);
+void *safeMalloc(size_t);
 
 int startServer();
 
-void initPacket(char *buffer, ssize_t *bufferPointer);
+void initPacket(char *, ssize_t *);
 
-void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client);
+void sendMassPacket(char *, ssize_t , clientInfo_t *);
 
 clientInfo_t *initClientData(int, struct in_addr);
 
-void sendPlayerDisconnect(clientInfo_t *client);
+void sendPlayerDisconnect(clientInfo_t *);
 
 void *gameController(void *a);
 
-void prepareStartPacket(char *buffer, clientInfo_t *client);
+void prepareStartPacket(char *, clientInfo_t *);
 
-void sleep_ms(int milliseconds);
+void sleep_ms(int );
 
 unsigned int getPlayerCount();
 
-void stripSpecialCharacters(int *messageLength, char *message);
+void stripSpecialCharacters(int *, char *);
 
-void processMove(clientInfo_t *client, enum clientMovement_t move);
+void sendMessage(int , int , char *);
 
-void sendMessage(int playerId, int messageLength, char *message);
+void processQuit(clientInfo_t *);
 
-void processQuit(clientInfo_t *client);
+void processTick(unsigned long int *);
 
-void processTick(unsigned long int TICK);
+bool sameTile(clientInfo_t *, clientInfo_t *);
 
-bool sameTile(clientInfo_t *a, clientInfo_t *b);
+void reloadMaps();
+
+void threadErrorHandler(char errormsg[], int , clientInfo_t *);
+
+void debugPacket(char *, const char *, const char *);
+
+void initVariables();
+
+void initMaps();
+
+void addMap(FILE *, char name[256]);
+
+void sendStartPackets();
+
+void processNewPlayer(clientInfo_t *);
+
+void *playerSender(void *);
+
+void *playerReceiver(void *);
 
 /*
  * Structs
@@ -146,13 +165,16 @@ typedef struct clientInfo {                 // Holds client specific data
     unsigned int powerupTick;               // Ticks before client powerup expires
     float x;                                // x coordinates
     float y;                                // x coordinates
-    int score;                              // Score
+    int score;                              // Player score
     bool active;                            // Tells if client type, state has been initialized
+    pthread_t connection_handler_thread_id; // Thread ID of connection handler
+    pthread_t packet_sndr_thread_id;        // Thread ID of packet sender
+    pthread_t packet_rcv_thread_id;         // Thread ID of packet receiver
 } clientInfo_t;
 
 
 typedef struct mapList {                            //Contains list of loaded maps, populated by initMaps
-    char filename[FILENAME_MAX];
+    char filename[FILENAME_MAX];                    //Map filename
     int width;                                      //x
     int height;                                     //y
     char map[MAX_MAP_WIDTH][MAX_MAP_HEIGHT];        //Map during game, might change during gameplay
@@ -173,8 +195,14 @@ mapList_t *MAP_CURRENT;                 // Pointer to the current loaded MAP
 enum debugLevel_t debugLevel;           // Holds debugging level of the server (-v/-vv)
 
 
+/*
+ * Helper functions
+ */
 
-void *safe_malloc(size_t size) {
+/**
+ * Safe malloc implementation
+ */
+void *safeMalloc(size_t size) {
     void *p = malloc(size);
     if (!p) {
         fprintf(stderr, "%s\n", strerror(errno));
@@ -184,42 +212,28 @@ void *safe_malloc(size_t size) {
     return p;
 }
 
-
+/**
+ * Main thread failure function, called when an fatal error occurs
+ */
 void exitWithMessage(char error[]) {
     printf("%s\n", error);
     exit(EXIT_FAILURE);
 }
 
+/**
+ * Returns initialized client struct
+ */
+clientInfo_t *initClientData(int sock, struct in_addr ip) {
+    static unsigned int CLIENT_ID_ITERATOR = 1;
 
-void processArgs(int argc, char *argv[]) {
-    int i;
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-p") == 0) {
-            i++;
-            PORT = atoi(argv[i]);
-        } else if (strcmp(argv[i], "-m") == 0) {
-            i++;
-            strcpy(MAPDIR, argv[i]);
-        } else if (strcmp(argv[i], "-v") == 0) {
-            debugLevel = VERBOSE;
-        } else if (strcmp(argv[i], "-vv") == 0) {
-            debugLevel = DEBUG;
-        } else if (strcmp(argv[i], "-h") == 0) {
-            exitWithMessage("-p [PORT] if not specified 8888\n"
-                                    "-m [DIRECTORY] Directory name containing maps, default maps\n"
-                                    "-v Verbose logging\n"
-                                    "-vv VERY verbose logging (including packets)\n");
-        }
-    }
-}
-
-// Define the function to be called when ctrl-c (SIGINT) signal is sent to process
-void signal_callback_handler(int signum) {
-    printf("Caught signal %d\n", signum);
-    // Cleanup and close up stuff here
-
-    // Terminate program
-    exit(signum);
+    clientInfo_t *client = safeMalloc(sizeof(clientInfo_t));
+    client->id = CLIENT_ID_ITERATOR++;  // Player ID
+    client->sock = sock;                // Player TCP socket
+    client->ip = ip;                    // Player IP address
+    client->active = false;             // Active will be set to true only when game starts and player is sent STARt packet
+    client->packet_rcv_thread_id=0;     // Client packet receiver thread
+    client->packet_sndr_thread_id=0;    // Client packet sender thread
+    return client;
 }
 
 /**
@@ -250,94 +264,44 @@ bool isNameUsed(char *name) {
 }
 
 /**
- * Returns initialized client struct
+ * Initializes empty packet and bufferPointer
  */
-clientInfo_t *initClientData(int sock, struct in_addr ip) {
-    static unsigned int CLIENT_ID_ITERATOR = 1;
-
-    clientInfo_t *client = safe_malloc(sizeof(clientInfo_t));
-    client->id = CLIENT_ID_ITERATOR++;
-    client->sock = sock;
-    client->ip = ip;
-    client->active = false; //Active will be set to true only when game starts
-    return client;
+void initPacket(char *buffer, ssize_t *bufferPointer) {
+    *bufferPointer = 0;
+    memset(buffer, 0, MAX_PACKET_SIZE);
+}
+/**
+ * Receives data from buffer, received data is stored in buffer
+ */
+void receivePacket(char *buffer, ssize_t *bufferPointer, clientInfo_t *client) {
+    initPacket(buffer, bufferPointer);
+    *bufferPointer = recv(client->sock, buffer, MAX_PACKET_SIZE, 0);
+    if (*bufferPointer <= 0) threadErrorHandler("Lost connection with player", 10, client);
+    if (debugLevel >= DEBUG) {
+        debugPacket(buffer, __func__, strerror(errno));
+    }
 }
 
 /**
- * Main server thread which listens to incoming connections
- * Creates a new gameController thread which control the game process
- * If a new client connection is received a new thread (handle_connection) is created which authorizes the client and
- * creates client specific packet receiver (playerReceiver) and packet sender thread (playerSender) in which game data
- * is being sent
+ * Sends the buffer to socket
  */
-int startServer() {
-    int socket_desc, client_sock, c;
-    struct sockaddr_in server, client;
+void sendPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
 
-    //Create socket
-    socket_desc = socket(AF_INET, SOCK_STREAM, 0);
-    // set SO_REUSEADDR on a socket to true (1):
-    int optval = 1;
-    setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
-    if (socket_desc == -1 || optval == -1) {
-        exitWithMessage("Unable to create a socket");
+    write(client->sock, buffer, (size_t) bufferPointer);
+    if (debugLevel >= DEBUG) {
+        debugPacket(buffer, __func__, strerror(errno));
     }
-
-    server.sin_family = AF_INET;
-    server.sin_addr.s_addr = INADDR_ANY;
-    server.sin_port = htons(PORT);
-
-    //Binds TCP
-    if (bind(socket_desc, (struct sockaddr *) &server, sizeof(server)) < 0) {
-        exitWithMessage("Unable to bind server");
-        return 1;
-    }
-
-    //Listen to incoming connections
-    listen(socket_desc, 3);
-
-
-    //Accept and incoming connection
-    if (debugLevel >= INFO) printf("INFO:\tWaiting for incoming connections on port %d\n", PORT);
-    c = sizeof(struct sockaddr_in);
-    pthread_t thread_id;
-
-    /* Launch game controller thread */
-    if (pthread_create(&thread_id, NULL, gameController, NULL) < 0) {
-        perror("could not create thread");
-        return 1;
-    }
-
-
-    while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
-        printf("INFO:\tConnection accepted from %s \n", inet_ntoa(client.sin_addr));
-
-        clientInfo_t *currentClient = initClientData(client_sock, client.sin_addr);
-
-        //Launch player connection controller thread
-        if (pthread_create(&thread_id, NULL, handle_connection, (void *) currentClient) < 0) {
-            perror("could not create thread");
-            return 1;
-        }
-
-        //Now join the thread , so that we dont terminate before the thread
-        //pthread_join( thread_id , NULL);
-    }
-
-    if (client_sock < 0) {
-        perror("accept failed");
-        return 1;
-    }
-
-    return 0;
-
 }
+
+
+
 
 /**
  * Debugging function which is called when packet is sent/received prints out packet type and errno
  */
-void debugPacket(enum packet_t packetType, const char *caller, const char *errorno) {
-    switch (packetType) {
+
+void debugPacket(char *buffer, const char *caller, const char *errorno) {
+    switch (buffer[0]) {
         case JOIN:
             printf("DEBUG:\t%s with type JOIN %s\n", caller, errorno);
             break;
@@ -345,7 +309,9 @@ void debugPacket(enum packet_t packetType, const char *caller, const char *error
             printf("DEBUG:\t%s with type ACK %s\n", caller, errorno);
             break;
         case START:
-            printf("DEBUG:\t%s with type START %s\n", caller, errorno);
+            printf("DEBUG:\t%s with type START MAP(%d:%d), POS(%d:%d) %s\n", caller, (int) buffer[1],
+                   (int) buffer[2],
+                   (int) buffer[3], (int) buffer[4], errorno);
             break;
         case END:
             printf("DEBUG:\t%s with type END %s\n", caller, errorno);
@@ -354,7 +320,22 @@ void debugPacket(enum packet_t packetType, const char *caller, const char *error
             printf("DEBUG:\t%s with type MAP %s\n", caller, errorno);
             break;
         case MOVE:
-            printf("DEBUG:\t%s with type MOVE %s\n", caller, errorno);
+            switch (buffer[5]) {
+                case UP:
+                    printf("DEBUG:\t%s with type MOVE (UP) %s\n", caller, errorno);
+                    break;
+                case DOWN:
+                    printf("DEBUG:\t%s with type MOVE (DOWN) %s\n", caller, errorno);
+                    break;
+                case LEFT:
+                    printf("DEBUG:\t%s with type MOVE (LEFT) %s\n", caller, errorno);
+                    break;
+                case RIGHT:
+                    printf("DEBUG:\t%s with type MOVE (RIGHT) %s\n", caller, errorno);
+                    break;
+                default:
+                    printf("DEBUG:\t%s with type MOVE (UNKNOWN!!) %s\n", caller, errorno);
+            }
             break;
         case SCORE:
             printf("DEBUG:\t%s with type SCORE %s\n", caller, errorno);
@@ -363,7 +344,7 @@ void debugPacket(enum packet_t packetType, const char *caller, const char *error
             printf("DEBUG:\t%s with type MESSAGE %s\n", caller, errorno);
             break;
         case PLAYERS:
-            printf("DEBUG:\t%s with type PLAYERS %s\n", caller, errorno);
+            printf("DEBUG:\t%s with type PLAYERS (%d object) %s\n", caller, (int) buffer[1], errorno);
             break;
         case QUIT:
             printf("DEBUG:\t%s with type QUIT %s\n", caller, errorno);
@@ -385,7 +366,8 @@ void debugPacket(enum packet_t packetType, const char *caller, const char *error
  *  Prints the error message
  *  Closes the client socket
  *  Removes the client from client list array and cleans up the memory
- *  Exits the thread
+ *  Exits packetSender and packetReceiver threads if they have been created
+ *  Exits the main client connection thread
  */
 void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
     printf("INFO: %s: %s\n", inet_ntoa(client->ip), errormsg);
@@ -396,55 +378,307 @@ void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
             sendPlayerDisconnect(client);
         }
     }
+    if (client->packet_rcv_thread_id!=0) pthread_cancel(client->packet_rcv_thread_id);
+    if (client->packet_sndr_thread_id!=0) pthread_cancel(client->packet_sndr_thread_id);
     free(client);
     pthread_exit(&retval);
 }
 
-void sendPlayerDisconnect(clientInfo_t *client) {
-    char buffer[MAX_PACKET_SIZE] = {0};
-    buffer[0] = PLAYER_DISCONNECTED;
-    memcpy(buffer + PACKET_TYPE_SIZE, &client->id, sizeof(int));
-    sendMassPacket(buffer, PACKET_TYPE_SIZE + sizeof(int), client);
+/**
+ * Removes special characters (i.e \n) which should never be sent to clients
+ * Should be used for messages and player names
+ * Resulting string stored in message with messageLength updated
+ */
+void stripSpecialCharacters(int *messageLength, char *message) {
+    int newMessageLength = 0;
+    char newMessage[MAX_PACKET_SIZE];
+    for (int i = 0; i < *messageLength; i++) {
+        if (message[i] >= 32 && message[i] <= 126) {
+            newMessage[newMessageLength++] = message[i];
+        }
+    }
+    newMessage[newMessageLength++] = '\0'; //Make sure that the message ends with null character
+    *messageLength = newMessageLength;
+    memcpy(message, newMessage, (size_t) newMessageLength);
 }
 
-void receivePacket(char *buffer, ssize_t *bufferPointer, int sock) {
-    initPacket(buffer, bufferPointer);
-    *bufferPointer = recv(sock, buffer, MAX_PACKET_SIZE, 0);
-    if (debugLevel >= DEBUG) {
-        debugPacket((enum packet_t) buffer[0], __func__, strerror(errno));
-    }
-}
 
 /**
- * Sends the buffer to socket
+ * Starting point
  */
-void sendPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
+int main(int argc, char *argv[]) {
 
-    write(client->sock, buffer, (size_t) bufferPointer);
-    if (debugLevel >= DEBUG) {
-        debugPacket((enum packet_t) buffer[0], __func__, strerror(errno));
-    }
+    initVariables();
+    processArgs(argc, argv);
+    initMaps();
+    startServer();
+    return 0;
 }
 
-/**
- * Initializes empty packet and bufferPointer
- */
-void initPacket(char *buffer, ssize_t *bufferPointer) {
-    *bufferPointer = 0;
-    memset(buffer, 0, MAX_PACKET_SIZE);
-}
+void initVariables() {
+    // Default port
+    PORT = 8888;
+    // Default map directory
+    snprintf(MAPDIR, FILENAME_MAX, "maps/");
 
-/*
- * Send the passed packet to everyone except the passed client
- */
-void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
+    // Initialize player array
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (clientArr[i] && clientArr[i] != client) {
-            sendPacket(buffer, bufferPointer, clientArr[i]);
+        clientArr[i] = NULL;
+    }
+    MAP_HEAD = NULL;
+    gameStarted = false;
+}
+
+
+void processArgs(int argc, char *argv[]) {
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-p") == 0) {
+            i++;
+            PORT = atoi(argv[i]);
+        } else if (strcmp(argv[i], "-m") == 0) {
+            i++;
+            strcpy(MAPDIR, argv[i]);
+        } else if (strcmp(argv[i], "-v") == 0) {
+            debugLevel = VERBOSE;
+        } else if (strcmp(argv[i], "-vv") == 0) {
+            debugLevel = DEBUG;
+        } else if (strcmp(argv[i], "-h") == 0) {
+            exitWithMessage("-p [PORT] if not specified 8888\n"
+                                    "-m [DIRECTORY] Directory name containing maps, default maps\n"
+                                    "-v Verbose logging\n"
+                                    "-vv VERY verbose logging (including packets)\n");
         }
     }
 }
 
+/**
+ * Reads maps from the MAPDIR directory into mapList struct list
+ */
+void initMaps() {
+
+    DIR *desc; //Directory descriptor
+    struct dirent *ent;
+    FILE *open_file;
+
+
+    //Open directory
+    if (NULL == (desc = opendir(MAPDIR))) {
+        exitWithMessage("Unable to open map directory");
+    }
+    //Iterate through directory files
+    while ((ent = readdir(desc))) {
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+            continue; //We do not want to follow current and upper directory hard links
+        // If the directory contains file
+        if (ent->d_type == DT_REG) {
+            char filepath[FILENAME_MAX];
+            snprintf(filepath, FILENAME_MAX, "%s/%s", MAPDIR, ent->d_name);
+            // Open file
+            open_file = fopen(filepath, "r");
+            if (open_file == NULL) {
+                fprintf(stderr, "INFO:\tFailed to open %s, skipping\n", ent->d_name);
+                fclose(open_file);
+                continue;
+            }
+            //Pass to addMap function which tries to load file
+            addMap(open_file, ent->d_name);
+            fclose(open_file);
+        }
+    }
+    if (MAP_HEAD == NULL) {
+        exitWithMessage("ERROR: No maps loaded");
+    }
+}
+
+void addMap(FILE *mapfile, char name[256]) {
+    mapList_t *map = safeMalloc(sizeof(mapList_t));
+    // Initialize map metadata
+    map->next = NULL;
+    map->height = 0;
+    map->width = 0;
+    memset(map->map, 0, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
+    strcpy(map->filename, name);
+
+
+    if (MAP_HEAD == NULL) { // First map, point map head to it
+        MAP_HEAD = map;
+
+    } else { // Nth map, go to the end of list and append
+        mapList_t *tmp = MAP_HEAD;
+        while (tmp->next) {
+            tmp = tmp->next;
+        }
+        tmp->next = map;
+    }
+    // Reads the map data into 2D array
+    char c;
+    int x = 0;
+    int y = 0;
+    do {
+        c = getc(mapfile);
+        if (c == '\n') {
+            y++;
+            x = 0;
+        } else if (c == EOF) {
+            break;
+        } else {
+            c = c -
+                '0'; //The data in file are char type, but the map data should have char value of 0/1/2... not 47/48/49...
+            if (c == None || c == Dot || c == Wall || c == PowerPellet || c == Invincibility || c == Score) {
+                map->map[y][x] = c;
+                x++;
+            } else {
+                char tmp[FILENAME_MAX];
+                snprintf(tmp, FILENAME_MAX, "Incorrect character in %s (%d:%d)", map->filename, x, y);
+                exitWithMessage(tmp);
+            }
+        }
+    } while (c != EOF);
+    map->width = x;
+    map->height = ++y;
+    if (debugLevel >= VERBOSE)
+        printf("VERBOSE:\tMap %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
+
+}
+
+/**
+ * Main server thread which listens to incoming connections
+ * Creates a new gameController thread which controls the game process
+ * If a new client connection is received a new thread (handle_connection) is created which authorizes the client and
+ * creates client specific packet receiver (playerReceiver) and packet sender thread (playerSender) in which game data
+ * is being sent
+ */
+int startServer() {
+    int socket_desc, client_sock, c;
+    struct sockaddr_in server, client;
+
+    //Create socket
+    socket_desc = socket(AF_INET, SOCK_STREAM, 0);
+    // set SO_REUSEADDR on a socket to true (1):
+    int optval = 1;
+    setsockopt(socket_desc, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval); //Allow reuse of addresses
+    if (socket_desc == -1 || optval == -1) {
+        exitWithMessage("Unable to create a socket");
+    }
+    optval = 1;
+    setsockopt(socket_desc, IPPROTO_TCP, TCP_NODELAY, (char *) &optval,
+               sizeof(optval)); //Make sure the packets aren't buffered
+    if (socket_desc == -1 || optval == -1) {
+        exitWithMessage("ERROR: Unable to create a socket");
+    }
+    server.sin_family = AF_INET;
+    server.sin_addr.s_addr = INADDR_ANY; // Listen to all interfaces
+    server.sin_port = htons((uint16_t)PORT);       // Listening port
+
+    //Binds TCP
+    if (bind(socket_desc, (struct sockaddr *) &server, sizeof(server)) < 0) {
+        exitWithMessage("ERROR:\tUnable to bind server");
+        return 1;
+    }
+
+    //Listen to incoming connections
+    listen(socket_desc, 3);
+
+
+    //Accept and incoming connection
+    if (debugLevel >= INFO) printf("INFO:\tWaiting for incoming connections on port %d\n", PORT);
+    c = sizeof(struct sockaddr_in);
+    pthread_t thread_id;
+
+    // Launch game controller thread
+    if (pthread_create(&thread_id, NULL, gameController, NULL) < 0) {
+        perror("could not create thread");
+        return 1;
+    }
+
+
+    while ((client_sock = accept(socket_desc, (struct sockaddr *) &client, (socklen_t *) &c))) {
+        printf("INFO:\tConnection accepted from %s \n", inet_ntoa(client.sin_addr));
+
+        clientInfo_t *currentClient = initClientData(client_sock, client.sin_addr);
+
+        //Launch player connection controller thread
+        if (pthread_create(&currentClient->connection_handler_thread_id, NULL, handle_connection,
+                           (void *) currentClient) < 0) {
+            perror("could not create thread");
+            return 1;
+        }
+
+
+        //Now join the thread , so that we dont terminate before the thread
+    }
+    //pthread_join(thread_id, NULL);
+
+    if (client_sock < 0) {
+        perror("accept failed");
+        return 1;
+    }
+
+    return 0;
+
+}
+
+/**
+ * Game controller thread which executes when game is started, keep care of TICK counter and makes sure
+ * that all players receive Start packets
+ */
+void *gameController(void *a) {
+    printf("INFO:\tGame controller started\n");
+    MAP_CURRENT = MAP_HEAD;
+    unsigned long int TICK = 0;
+    gameStarted = false;
+    while (true) {
+        sleep_ms(TICK_FREQUENCY);
+        if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
+            if (TICK == 0) {
+                gameStarted = true;
+                if (debugLevel >= DEBUG) printf("DEBUG:\tGame started, sending START packets\n");
+                sendStartPackets();
+            }
+            processTick(&TICK);
+            TICK += 1;
+            if (debugLevel >= DEBUG) printf("DEBUG:\tTICK %lu\n", TICK);
+        }
+    }
+}
+
+/**
+ * Client connection thread which operates the open socket to the client
+ * Passes the client to processNewPlayer to authorize client
+ * If player was not sent START packet sends it (for late joins, when game is in progress)
+ * Creates playerSender and playerReceiver threads which send and receive player data during game
+ */
+void *handle_connection(void *conn) {
+    // Get the socket descriptor
+    clientInfo_t *clientInfo = (clientInfo_t *) conn;
+
+    // New client connection, authorize the client
+    processNewPlayer(clientInfo);
+
+    // If the game had already started and the player was not processed during start we have to also send the START packet
+    if (gameStarted && !clientInfo->active) {
+        char buffer[MAX_PACKET_SIZE] = {0};
+        prepareStartPacket(buffer, clientInfo);
+        if (debugLevel >= DEBUG) printf("DEBUG:\t%s joined late, also sending START packet\n", clientInfo->name);
+        sendPacket(buffer, 5, clientInfo);
+    }
+
+    // Create seperate game handler threads for client
+    // First thread - sends game data to the client (MAP/PLAYERS/SCORE)
+    if (pthread_create(&clientInfo->packet_sndr_thread_id, NULL, playerSender, (void *) clientInfo) < 0) {
+        threadErrorHandler("Could not create playerSender thread", 7, clientInfo);
+    }
+
+
+    // Second thread for receiving messages from client (MOVE/MESSAGE/QUIT(PLAYER_DISCONNECTED))
+    if (pthread_create(&clientInfo->packet_rcv_thread_id, NULL, playerReceiver, (void *) clientInfo) < 0) {
+        threadErrorHandler("Could not create playerReceiver thread", 8, clientInfo);
+    }
+
+
+    return 0;
+}
 
 /**
  * Function which processes new players (TCP)
@@ -459,7 +693,7 @@ void processNewPlayer(clientInfo_t *clientInfo) {
      *  0 - Packet type
      *  1-21 - Nickname
      */
-    receivePacket(buffer, &bufferPointer, clientInfo->sock);
+    receivePacket(buffer, &bufferPointer, clientInfo);
     if (bufferPointer == 0) {
         threadErrorHandler("INFO:\tUnauthenticated client disconnected", 1, clientInfo);
     } else if (bufferPointer == -1) {
@@ -510,7 +744,6 @@ void processNewPlayer(clientInfo_t *clientInfo) {
 
 
 }
-
 
 /**
  * Function (in a seperate thread) which updates the client with game data (MAP/PLAYERS/SCORE)
@@ -585,7 +818,6 @@ void *playerSender(void *clientP) {
             memcpy(buffer + 1, &objectCount, sizeof(int));
             sendPacket(buffer, bufferPointer, client);
 
-
             sleep_ms(TICK_FREQUENCY);
 
         }
@@ -605,7 +837,7 @@ void *playerReceiver(void *client) {
         memset(buffer, 0, MAX_PACKET_SIZE);
         ssize_t bufferPointer = 0; //Stores received packet size
         int messageLength = 0;
-        receivePacket(buffer, &bufferPointer, clientInfo->sock);
+        receivePacket(buffer, &bufferPointer, clientInfo);
         switch (buffer[0]) {
             case MOVE:
                 /*
@@ -636,11 +868,35 @@ void *playerReceiver(void *client) {
                  */
                 processQuit(clientInfo);
                 break;
+            default:
+                break;
         }
 
         sleep_ms(TICK_FREQUENCY);
     }
     return 0;
+}
+
+
+
+void sendPlayerDisconnect(clientInfo_t *client) {
+    char buffer[MAX_PACKET_SIZE] = {0};
+    buffer[0] = PLAYER_DISCONNECTED;
+    memcpy(buffer + PACKET_TYPE_SIZE, &client->id, sizeof(int));
+    sendMassPacket(buffer, PACKET_TYPE_SIZE + sizeof(int), client);
+}
+
+
+
+/*
+ * Send the passed packet to everyone except the passed client
+ */
+void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] && clientArr[i] != client) {
+            sendPacket(buffer, bufferPointer, clientArr[i]);
+        }
+    }
 }
 
 
@@ -685,64 +941,9 @@ void processQuit(clientInfo_t *client) {
     buffer[0] = PLAYER_DISCONNECTED;
     memcpy(buffer + 1, &client->id, sizeof(int)); // Player ID
     sendMassPacket(buffer, 5, client);
-    //TODO Clean up player data (pthread_kill);
 
 }
 
-/**
- * Removes special characters (i.e \n) which should never be sent to clients
- * Should be used for messages and player names
- * Resulting string stored in message with messageLength updated
- */
-void stripSpecialCharacters(int *messageLength, char *message) {
-    int newMessageLength = 0;
-    char newMessage[MAX_PACKET_SIZE];
-    for (int i = 0; i < *messageLength; i++) {
-        if (message[i] >= 32 && message[i] <= 126) {
-            newMessage[newMessageLength++] = message[i];
-        }
-    }
-    newMessage[newMessageLength++] = '\0'; //Make sure that the message ends with null character
-    *messageLength = newMessageLength;
-    memset(message, 0, (size_t) *messageLength);
-    memcpy(message, newMessage, (size_t) newMessageLength);
-}
-
-/**
- * Client connection thread which operates the open socket to the client
- */
-void *handle_connection(void *conn) {
-    // Get the socket descriptor
-    clientInfo_t *clientInfo = (clientInfo_t *) conn;
-    int sock = clientInfo->sock;
-
-    // New client connection
-    processNewPlayer(clientInfo);
-
-    // If the game had already started and the player was not processed during start we have to also send the START packet
-    if (gameStarted && !clientInfo->active) {
-        char buffer[MAX_PACKET_SIZE] = {0};
-        prepareStartPacket(buffer, clientInfo);
-        if (debugLevel >= DEBUG) printf("DEBUG:\t%s joined late, also sending START packet\n", clientInfo->name);
-        sendPacket(buffer, 5, clientInfo);
-    }
-
-    pthread_t thread_id;
-    // Create seperate game handler threads for client
-    // First thread - sends game data to the client (MAP/PLAYERS/SCORE)
-    if (pthread_create(&thread_id, NULL, playerSender, (void *) clientInfo) < 0) {
-        threadErrorHandler("Could not create playerSender thread", 7, clientInfo);
-    }
-
-
-    // Second thread for receiving messages from client (MOVE/MESSAGE/QUIT(PLAYER_DISCONNECTED))
-    if (pthread_create(&thread_id, NULL, playerReceiver, (void *) clientInfo) < 0) {
-        threadErrorHandler("Could not create playerReceiver thread", 8, clientInfo);
-    }
-
-
-    return 0;
-}
 
 void sleep_ms(int milliseconds) // cross-platform sleep function
 {
@@ -780,7 +981,7 @@ unsigned int getActivePlayerCount() {
     return players;
 }
 
-/*
+/**
  * Sends game start packet to all clients
  */
 void sendStartPackets() {
@@ -855,7 +1056,6 @@ void findStartingPosition(clientInfo_t *client) {
     } else if (client->playerType == Ghost) { // If Ghost start search in lower right corner
         int rows = MAP_CURRENT->height;
         int cols = MAP_CURRENT->width;
-        bool spotFound = false;
         for (int i = rows; i >= 0; i--) {
             for (int j = cols; j >= 0; j--) {
                 if (MAP_CURRENT->map[i][j] != Wall &&
@@ -932,7 +1132,7 @@ void prepareStartPacket(char *buffer, clientInfo_t *client) {
 
     // If player is a Pacman start with invincibility
     if (client->playerType == Pacman) {
-        client->powerupTick = POWERUP_START_Invincibility;
+        client->powerupTick = POWERUP_START_Invincibility_TICKS;
         client->playerState = powerupInvincibility;
     }
 
@@ -944,25 +1144,7 @@ void prepareStartPacket(char *buffer, clientInfo_t *client) {
 }
 
 
-void *gameController(void *a) {
-    printf("INFO:\tGame controller started\n");
-    MAP_CURRENT = MAP_HEAD;
-    unsigned long int TICK = 0;
-    gameStarted = false;
-    while (true) {
-        sleep_ms(TICK_FREQUENCY);
-        if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
-            if (TICK == 0) {
-                gameStarted = true;
-                if (debugLevel >= DEBUG) printf("DEBUG:\tGame started, sending START packets\n");
-                sendStartPackets();
-            }
-            processTick(TICK);
-            TICK += 1;
-            if (debugLevel >= DEBUG) printf("DEBUG:\tTICK %lu\n", TICK);
-        }
-    }
-}
+
 
 /**
  * Function which compares two player coordinates and returns true if both of them are to be
@@ -987,9 +1169,83 @@ void resetMapObject(clientInfo_t *a) {
 }
 
 /**
- * Collision detection, powerup and player movement function
+ * Function which handles games ending and new map initialization
+ * Receives winning player type and announces the winner via message
+ * Starts new game with the next map
  */
-void processTick(unsigned long int TICK) {
+void endGame(enum playerType_t playerType, unsigned long int *TICK) {
+    //Send message to all players
+    int messageLength = 17;
+    if (playerType == Pacman) sendMessage(0, messageLength, "Pacmans have won!");
+    else {
+        sendMessage(0, messageLength, "Ghosts have won!");
+    }
+    /*
+     * Prepare END packet
+     */
+    char buffer[PACKET_TYPE_SIZE];
+    buffer[0] = END;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] && clientArr[i]->active) {
+            sendPacket(buffer, PACKET_TYPE_SIZE, clientArr[i]); //Send END packet to all players which received START
+        }
+    }
+    //Reset ticks, map data
+    *TICK = 0;
+    if (MAP_CURRENT->next) {
+        MAP_CURRENT = MAP_CURRENT->next;
+    } else {
+        MAP_CURRENT = MAP_HEAD;
+    }
+    reloadMaps();
+    sendStartPackets();
+
+
+}
+
+/**
+ * Collision detection, powerup and player movement function executed once per tick
+ */
+void processTick(unsigned long int *TICK) {
+    /*
+     * Check if game ending condition is met
+     *  1) Only Ghosts left
+     *  2) Only Pacmans left
+     *  3) No more dots
+     */
+    int ghostCount = 0;
+    int pacmanCount = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (clientArr[i] && clientArr[i]->active) {
+            if (clientArr[i]->playerType == Ghost) ghostCount++; //Count ghosts
+            else if (clientArr[i]->playerType == Pacman) pacmanCount++; //Count pacmans
+        }
+    }
+    //Check if there are any leftover dots
+    bool dotFound = false;
+    for (int i = 0; i < MAP_CURRENT->height; i++) {
+        for (int j = 0; j < MAP_CURRENT->width; j++) {
+            enum mapObjecT_t mapObject = (enum mapObjecT_t) MAP_CURRENT->map[i][j];
+            if (mapObject == Dot) {
+                dotFound = true;
+                break;
+            }
+        }
+        if (dotFound) break;
+    }
+
+    if (ghostCount > 0 && pacmanCount == 0) {
+        endGame(Ghost, TICK);
+    } // No more pacman ghosts win
+    else if (pacmanCount > 0 && ghostCount == 0) {
+        endGame(Pacman, TICK);
+    } // No more ghosts pacman win
+    else if (!dotFound) {
+        endGame(Pacman, TICK);
+    } // No more dots
+
+
+
     for (int i = 0; i < MAX_PLAYERS; i++) {
         clientInfo_t *player = clientArr[i];
         if (player && player->active && player->playerState != DEAD) {
@@ -1010,7 +1266,8 @@ void processTick(unsigned long int TICK) {
              */
             if (player->playerType == Ghost) {
                 for (int j = 0; j < MAX_PLAYERS; j++) {
-                    if (clientArr[j] && clientArr[j]->active && clientArr[j]->playerType == Pacman) { //Find all Pacmans
+                    if (clientArr[j] && clientArr[j]->active &&
+                        clientArr[j]->playerType == Pacman) { //Find all Pacmans
                         clientInfo_t *pacman = clientArr[j];
                         if (pacman->playerState == NORMAL) { //Make sure that Pacman doesn't have any powerups
                             if (sameTile(pacman,
@@ -1034,18 +1291,32 @@ void processTick(unsigned long int TICK) {
              */
             if (player->playerType == Pacman) {
                 if (whichMapObject(player) == PowerPellet) {
+                    if (debugLevel >= DEBUG)
+                        printf("DEBUG:\t%s ate powerPellet at (%d:%d)\n", player->name, (int) player->x,
+                               (int) player->y);
                     player->playerState = powerupPowerPellet;
-                    player->powerupTick = POWERUP_PowerPellet;
+                    player->powerupTick = POWERUP_PowerPellet_TICKS;
+                    resetMapObject(player);
 
                 } else if (whichMapObject(player) == Invincibility) {
+                    if (debugLevel >= DEBUG)
+                        printf("DEBUG:\t%s ate Invincibility at (%d:%d)\n", player->name, (int) player->x,
+                               (int) player->y);
                     player->playerState = powerupInvincibility;
-                    player->powerupTick = POWERUP_Invincibility;
+                    player->powerupTick = POWERUP_Invincibility_TICKS;
+                    resetMapObject(player);
                 } else if (whichMapObject(player) == SCORE) {
+                    if (debugLevel >= DEBUG)
+                        printf("DEBUG:\t%s ate SCORE at (%d:%d)\n", player->name, (int) player->x, (int) player->y);
                     player->score += SCORE_POINTS;
+                    resetMapObject(player);
                 } else if (whichMapObject(player) == Dot) {
+                    if (debugLevel >= DEBUG)
+                        printf("DEBUG:\t%s ate Dot at (%d:%d)\n", player->name, (int) player->x, (int) player->y);
                     player->score += DOT_POINTS;
+                    resetMapObject(player);
                 }
-                resetMapObject(player);
+
             }
 
 
@@ -1078,121 +1349,54 @@ void processTick(unsigned long int TICK) {
              * If the player is standing on a wall move him back
              */
             if (player->clientMovement == UP) {
-                player->y += TICK_MOVEMENT;
-                if (whichMapObject(player) == Wall){
-                    player->y -= TICK_MOVEMENT;
+                player->y -= TICK_MOVEMENT;
+                if (whichMapObject(player) == Wall) {
+                    player->y += TICK_MOVEMENT;
                 }
             } else if (player->clientMovement == DOWN) {
-                player->y -= TICK_MOVEMENT;
-                if (whichMapObject(player) == Wall){
-                    player->y += TICK_MOVEMENT;
+                player->y += TICK_MOVEMENT;
+                if (whichMapObject(player) == Wall) {
+                    player->y -= TICK_MOVEMENT;
                 }
             } else if (player->clientMovement == LEFT) {
                 player->x -= TICK_MOVEMENT;
-                if (whichMapObject(player) == Wall){
+                if (whichMapObject(player) == Wall) {
                     player->x += TICK_MOVEMENT;
                 }
             } else if (player->clientMovement == RIGHT) {
                 player->x += TICK_MOVEMENT;
-                if (whichMapObject(player) == Wall){
+                if (whichMapObject(player) == Wall) {
                     player->x -= TICK_MOVEMENT;
                 }
             }
 
-
-            //Spawn a powerup in almost random position
-
         }
+    }
+
+    //Spawn a powerup in almost random position
+    srand((unsigned int) time(0)); //Seed PRNG
+    int x, y;
+    enum mapObjecT_t mapObject;
+    if ((*TICK % POWERUP_Invincibility_SPAWN_TICKS) == 0) {
+        do {
+            x = rand() % MAP_CURRENT->width;
+            y = rand() % MAP_CURRENT->height;
+            mapObject = (enum mapObjecT_t) MAP_CURRENT->map[y][x];
+        } while (mapObject != Score && mapObject != None && mapObject != Dot);
+        MAP_CURRENT->map[y][x] = Invincibility;
+        if (debugLevel >= DEBUG) printf("DEBUG:\tSpawned Invincibility at (%d:%d)\n", x, y);
+    }
+    if ((*TICK % POWERUP_PowerPellet_SPAWN_TICKS) == 0) {
+        do {
+            x = rand() % MAP_CURRENT->width;
+            y = rand() % MAP_CURRENT->height;
+            mapObject = (enum mapObjecT_t) MAP_CURRENT->map[y][x];
+        } while (mapObject != Score && mapObject != None && mapObject != Dot);
+        MAP_CURRENT->map[y][x] = powerupPowerPellet;
+        if (debugLevel >= DEBUG) printf("DEBUG:\tSpawned powerPellet at (%d:%d)\n", x, y);
     }
 }
 
-void addMap(FILE *mapfile, char name[256]) {
-    mapList_t *map = safe_malloc(sizeof(mapList_t));
-    // Initialize map metadata
-    map->next = NULL;
-    map->height = 0;
-    map->width = 0;
-    memset(map->map, 0, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
-    strcpy(map->filename, name);
-
-
-    if (MAP_HEAD == NULL) { // First map, point map head to it
-        MAP_HEAD = map;
-
-    } else { // Nth map, go to the end of list and append
-        mapList_t *tmp = MAP_HEAD;
-        while (tmp->next) {
-            tmp = tmp->next;
-        }
-        tmp->next = map;
-    }
-    // Reads the map data into 2D array
-    char c;
-    int x = 0;
-    int y = 0;
-    do {
-        c = getc(mapfile);
-        if (c == '\n') {
-            y++;
-            x = 0;
-        } else if (c == EOF) {
-            break;
-        } else {
-            c = c -
-                '0'; //The data in file are char type, but the map data should have char value of 0/1/2... not 47/48/49...
-            if (c == None || c == Dot || c == Wall || c == PowerPellet || c == Invincibility || c == Score) {
-                map->map[y][x] = c;
-                x++;
-            } else {
-                char tmp[FILENAME_MAX];
-                snprintf(tmp, FILENAME_MAX, "Incorrect character in %s (%d:%d)", map->filename, x, y);
-                exitWithMessage(tmp);
-            }
-        }
-    } while (c != EOF);
-    map->width = x;
-    map->height = ++y;
-    if (debugLevel >= VERBOSE) printf("VERBOSE:\tMap %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
-
-}
-
-/**
- * Reads maps from the MAPDIR directory into mapList struct list
- */
-void initMaps() {
-
-    DIR *desc; //Directory descriptor
-    struct dirent *ent;
-    FILE *open_file;
-
-
-    /* Scanning the in directory */
-    if (NULL == (desc = opendir(MAPDIR))) {
-        exitWithMessage("Unable to open map directory");
-    }
-
-    while ((ent = readdir(desc))) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue; //We do not want to follow current and upper directory hard links
-
-        if (ent->d_type == DT_REG) {
-            char filepath[FILENAME_MAX];
-            snprintf(filepath, FILENAME_MAX, "%s/%s", MAPDIR, ent->d_name);
-            // Open file
-            open_file = fopen(filepath, "r");
-            if (open_file == NULL) {
-                fprintf(stderr, "INFO:\tFailed to open %s, skipping\n", ent->d_name);
-                fclose(open_file);
-                continue;
-            }
-            addMap(open_file, ent->d_name);
-            fclose(open_file);
-        }
-    }
-    if (MAP_HEAD == NULL) {
-        exitWithMessage("No maps loaded");
-    }
-}
 
 /**
  * Resets map tiles to default values since they have changed during game
@@ -1205,29 +1409,7 @@ void reloadMaps() {
     }
 }
 
-void initVariables() {
-    // Default port
-    PORT = 8888;
-    // Default map directory
-    snprintf(MAPDIR, FILENAME_MAX, "maps/");
-
-    // Initialize player array
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        clientArr[i] = NULL;
-    }
-    MAP_HEAD = NULL;
-    gameStarted = false;
-}
 
 
-int main(int argc, char *argv[]) {
-
-    signal(SIGINT, signal_callback_handler);
-    initVariables();
-    processArgs(argc, argv);
-    initMaps();
-    startServer();
 
 
-    return 0;
-}
