@@ -130,8 +130,6 @@ void processTick(unsigned long int *);
 
 bool sameTile(clientInfo_t *, clientInfo_t *);
 
-void reloadMaps();
-
 void threadErrorHandler(char errormsg[], int, clientInfo_t *);
 
 void debugPacket(char *, const char *, const char *);
@@ -1131,7 +1129,9 @@ clientInfo_t *isSomeoneThere(int x, int y) {
     return NULL;
 }
 
-
+/**
+ * Looks for adequate player spawning position on the map
+ */
 void findStartingPosition(clientInfo_t *client) {
 
     if (client->playerType == Pacman) { // If Pacman start search in the upper left corner
@@ -1217,7 +1217,7 @@ void findStartingPosition(clientInfo_t *client) {
 
 }
 
-/*
+/**
  * Decides if the player should be Pacman or Ghost
  */
 void pacmanOrGhost(clientInfo_t *client) {
@@ -1232,7 +1232,7 @@ void pacmanOrGhost(clientInfo_t *client) {
     }
 }
 
-/*
+/**
  * Prepares start packet for specific client
  */
 void prepareStartPacket(char *buffer, clientInfo_t *client) {
