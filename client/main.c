@@ -114,15 +114,17 @@ void createNotificationWindow();
 void createScoreBoardWindow();
 void epicDebug(char*);
 void sendChatMessage();
+void endGame();
+void exitGame();
 
-void exitWithMessage(char error[]) {
+void exitWithMessage(char msg[]) {
     deleteAllWindows();
     refresh();
     noecho();
     curs_set(FALSE);
     errorWindow = newwin(ERROR_HEIGHT, ERROR_WIDTH, (LINES - ERROR_HEIGHT) / 2, (COLS - ERROR_WIDTH) / 2);
     box(errorWindow, 0, 0);
-    mvwprintw(errorWindow, ERROR_HEIGHT / 2 - 1, 3, error);
+    mvwprintw(errorWindow, ERROR_HEIGHT / 2 - 1, 3, msg);
     mvwprintw(errorWindow, (ERROR_HEIGHT / 2) + 1, 3, "Exiting in 5 seconds...");
     wrefresh(errorWindow);
     refresh();
@@ -130,7 +132,7 @@ void exitWithMessage(char error[]) {
     windowDeleteAction(errorWindow);
     windowDeleteAction(mainWindow);
     endwin();
-    exit(EXIT_FAILURE);
+    exit(1);
 }
 
 void deleteAllWindows() {
@@ -425,20 +427,19 @@ void *listenToServer(void *conn) {
     int sock = *(int *) conn;
     ssize_t readSize;
     char message[MAX_PACKET_SIZE];
-//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Started listening to the server");
 
     while ((readSize = recv(sock, message, MAX_PACKET_SIZE, 0)) > 0) {
         int packetType = (int)message[0];
 
         switch (packetType) {
             case JOINED:
-                playerJoinedEvent(message); // @TODO Implement
+                playerJoinedEvent(message);
                 break;
             case PLAYER_DISCONNECTED:
-                playerDisconnectedEvent(message); // @TODO Implement
+                playerDisconnectedEvent(message);
                 break;
             case END:
-//                endGame(); @TODO Implement
+                endGame();
                 break;
             case MAP:
                 drawMap(message);
@@ -499,7 +500,7 @@ void *listenToInput(void *conn) {
                     break;
                 case (int)'q':
                     sendPacket = 0;
-//                    exitGame(); // @TODO Implement
+                    exitGame();
                     break;
                 default:
                     sendPacket = 0;
@@ -524,6 +525,24 @@ void *listenToInput(void *conn) {
     }
 
     return 0;
+}
+
+void exitGame() {
+    char packet[1 + sizeof(int)];
+
+    memset(packet, '\0', sizeof(packet));
+    memset(packet, QUIT, 1);
+    memcpy(packet+1, &myId, sizeof(int));
+
+    if(send(sock, packet, sizeof(packet) , 0) < 0) {
+        exitWithMessage("Join request has failed. Please check your internet connection and try again.");
+    }
+
+    exitWithMessage("Goodbye!");
+}
+
+void endGame() {
+    //@TODO endgame logic
 }
 
 /**
@@ -754,7 +773,7 @@ void drawScoreTable(char *scores) {
 
         char printId[MAX_PACKET_SIZE] = {0};
         char printScore[MAX_PACKET_SIZE] = {0};
-        sprintf(printId, "%d", playerId);
+        sprintf(printId, "%s", playerList[playerId]);
         sprintf(printScore, "%d", playerScore);
 
         if(playerId == myId) {
