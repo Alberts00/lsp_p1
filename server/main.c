@@ -378,7 +378,6 @@ void debugPacket(char *buffer, const char *caller, const char *errorno) {
 void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
     printf("INFO: %s: %s\n", inet_ntoa(client->ip), errormsg);
     close(client->sock);
-    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (client == clientArr[i]) {
             clientArr[i] = NULL;
@@ -388,7 +387,6 @@ void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
     if (client->packet_rcv_thread_id != 0) pthread_cancel(client->packet_rcv_thread_id);
     if (client->packet_sndr_thread_id != 0) pthread_cancel(client->packet_sndr_thread_id);
     free(client);
-    pthread_mutex_unlock(&clientArrLock);
     pthread_exit(&retval);
 }
 
@@ -659,8 +657,8 @@ void *gameController(void *a) {
             int ghostCount = 0;
             int pacmanCount = 0;
             for (int i = 0; i < MAX_PLAYERS; i++) {
-                if (clientArr[i] && clientArr[i]->active) {
-                    if (clientArr[i]->playerType == Ghost) ghostCount++; //Count ghosts
+                if (clientArr[i] && clientArr[i]->active && clientArr[i]->playerState != DEAD) {
+                    if (clientArr[i]->playerType == Ghost ) ghostCount++; //Count ghosts
                     else if (clientArr[i]->playerType == Pacman) pacmanCount++; //Count pacmans
                 }
             }
