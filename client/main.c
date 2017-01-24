@@ -18,6 +18,28 @@
 #include <ncurses.h>
 #include <math.h>
 
+
+/**
+ * Definitions
+ */
+#define WORLD_WIDTH 101
+#define WORLD_HEIGHT 101
+#define CONNECTION_WIDTH 40
+#define CONNECTION_HEIGHT 20
+#define ERROR_WIDTH 40
+#define ERROR_HEIGHT 10
+#define MAX_PACKET_SIZE 15000
+#define NOTIFICATION_HEIGHT 30
+#define NOTIFICATION_WIDTH 40
+#define NOTIFICATION_OFFSET 3
+#define SCORE_HEIGHT 20
+#define SCORE_WIDTH 40
+#define GREEN_PAIR 1
+#define RED_PAIR 2
+#define YELLOW_PAIR 3
+#define BLUE_PAIR 4
+#define WHITE_PAIR 5
+
 /**
  * GLOBAL VARIABLES
  */
@@ -27,10 +49,14 @@ WINDOW *scoreBoardWindow;
 WINDOW *notificationWindow;
 WINDOW *connectionWindow;
 WINDOW *errorWindow;
+WINDOW *sendMessageWindow;
 int mapW;
 int mapH;
 int notificationCounter;
 int myId;
+char oldPlayerLocations[MAX_PACKET_SIZE];
+char playerList[256][21];
+char myName[21] = {0};
 
 /**
  * ENUMS
@@ -53,15 +79,22 @@ enum mapObjecT_t {
 enum playerState_t {
     PS_NORMAL, PS_DEAD, PS_PowerPellet, PS_Invincibility, PS_Other
 };
+
 // Player type enumerations
 enum playerType_t {
     Pacman, Ghost
+};
+
+// Client movement enumerations
+enum clientMovement_t {
+    UP, DOWN, RIGHT, LEFT
 };
 
 /**
  * METHOD DECLARATIONS
  */
 void *listenToServer(void*);
+void *listenToInput(void*);
 void sendJoinRequest();
 void receiveJoinResponse();
 void sendTextNotification(char[]);
@@ -74,31 +107,14 @@ void waitForStartPacket(int*, int*);
 void drawMap(char*);
 void drawPlayers(char*);
 void drawScoreTable(char*);
+void handleMessage(char*);
+void playerJoinedEvent(char*);
+void playerDisconnectedEvent(char*);
 void createNotificationWindow();
 void createScoreBoardWindow();
 void epicDebug(char*);
-
-
-/**
- * Definitions
- */
-#define WORLD_WIDTH 101
-#define WORLD_HEIGHT 101
-#define CONNECTION_WIDTH 40
-#define CONNECTION_HEIGHT 20
-#define ERROR_WIDTH 40
-#define ERROR_HEIGHT 10
-#define MAX_PACKET_SIZE 150000
-#define NOTIFICATION_HEIGHT 30
-#define NOTIFICATION_WIDTH 40
-#define NOTIFICATION_OFFSET 3
-#define SCORE_HEIGHT 20
-#define SCORE_WIDTH 40
-#define GREEN_PAIR 1
-#define RED_PAIR 2
-#define YELLOW_PAIR 3
-#define BLUE_PAIR 4
-#define WHITE_PAIR 5
+void drawPlayersLoop();
+void sendChatMessage();
 
 void *safe_malloc(size_t size) {
     void *p = malloc(size);
@@ -141,6 +157,47 @@ void windowDeleteAction(WINDOW *w) {
     delwin(w);
 }
 
+void sendChatMessage() {
+    char msg[MAX_PACKET_SIZE] = {0};
+
+    sendMessageWindow = newwin(5, NOTIFICATION_WIDTH, NOTIFICATION_HEIGHT + 3, NOTIFICATION_OFFSET);
+    box(sendMessageWindow, 0, 0);
+    scrollok(sendMessageWindow, TRUE);
+    writeToWindow(sendMessageWindow, 0, 0, "Write your message ");
+
+
+    echo();
+    curs_set(TRUE);
+    cbreak();
+
+    refresh();
+
+    wmove(sendMessageWindow, 1, 1);
+    wgetstr(sendMessageWindow, msg);
+//    scanw(msg);
+
+    int l = strlen(msg);
+
+    char packet[1 + sizeof(int) + sizeof(int) + l];
+
+    memset(packet, '\0', sizeof(packet));
+    memset(packet, MESSAGE, 1);
+    memcpy(packet+1, &myId, sizeof(int));
+    memcpy(packet+1+sizeof(int), &l, sizeof(int));
+    strcpy(packet+1+sizeof(int)+sizeof(int), msg);
+
+    if(send(sock, packet, sizeof(packet) , 0) < 0) {
+        exitWithMessage("Join request has failed. Please check your internet connection and try again.");
+    }
+
+    writeToWindow(mainWindow, 28, 1, msg);
+
+    cbreak();
+    noecho();
+    curs_set(FALSE);
+    windowDeleteAction(sendMessageWindow);
+}
+
 /**
  * Sends notification to the user
  */
@@ -169,6 +226,15 @@ int main(int argc, char *argv[]) {
     mapH = 0;
     notificationCounter = 0;
     myId = 0;
+
+    for (int i = 0; i < 256; ++i) {
+        for (int j = 0; j < 21; ++j) {
+            playerList[i][j] = '\0';
+        }
+    }
+
+    // Reset player locations variable
+    memset(oldPlayerLocations, '\0', MAX_PACKET_SIZE);
 
     initCurses();
 
@@ -204,27 +270,19 @@ int main(int argc, char *argv[]) {
     if (pthread_create(&threadId, NULL, listenToServer, (void *) &sock) < 0) {
         exitWithMessage("Error: Could not create a thread");
     }
-    pthread_join(threadId , NULL);
 
-    // Keep communicating with server
-//    while(1) {
-//        scanf("%s" , message);
-//
-//        //Send some data
-//        if( send(sock , message , strlen(message) , 0) < 0)
-//        {
-//            puts("Send failed");
-//            return 1;
-//        }
-//
-//        //Receive a reply from the server
-//        if( recv(sock , serverReply , 2000 , 0) < 0)
-//        {
-//            puts("recv failed");
-//            break;
-//        }
-//        puts(serverReply);
-//    }
+    // Start a new thread to draw players
+    pthread_t threadId2;
+    if (pthread_create(&threadId2, NULL, listenToInput, (void *) &sock) < 0) {
+        exitWithMessage("Error: Could not create a thread");
+    }
+
+    // Send commands to the server
+
+    drawPlayersLoop();
+
+    pthread_join(threadId, NULL);
+    pthread_join(threadId2, NULL);
 
     close(sock);
 
@@ -245,6 +303,7 @@ void connectionDialog(char *address, char *port) {
 
     echo();
     curs_set(TRUE);
+//    cbreak();
 
     connectionWindow = newwin(CONNECTION_HEIGHT, CONNECTION_WIDTH, offsetY, offsetX);
 
@@ -256,12 +315,13 @@ void connectionDialog(char *address, char *port) {
 
     writeToWindow(connectionWindow, 0, 0, "Connect to a server ");
     writeToWindow(connectionWindow, 2, 4, "Enter IP address to connect to: ");
-    wmove(connectionWindow, 3, 6);
+//    wmove(connectionWindow, 3, 6);
 //    scanf("%s", address);
 
 
-    refresh();
-//    mvwscanw(connectionWindow, 3, 6, address);
+//    refresh();
+    mvwscanw(connectionWindow, 4, 6, *&address);
+
     writeToWindow(connectionWindow, 5, 4, "Enter server port: ");
     refresh();
 //    mvwscanw(connectionWindow, 6, 6, port);
@@ -272,10 +332,17 @@ void connectionDialog(char *address, char *port) {
 //    strcpy(address, "95.68.71.51"); // Alberts
 //    strcpy(address, "149.202.149.77"); // Alberts
 //    strcpy(address, "81.198.119.38"); // Arnolds
-//    strcpy(address, "192.168.0.103"); // VM
-    strcpy(address, "192.168.120.93"); // SW
+    strcpy(address, "192.168.120.38"); // VM
+//    strcpy(address, "192.168.120.182"); // SW
+//    strcpy(address, "192.168.120.93"); // SW
     strcpy(port, "8888");
 //    strcpy(port, "2017"); // Arnolds
+//    strcpy(port, "3000"); // Arnolds
+//    nocbreak();
+
+    writeToWindow(mainWindow, 5, 4, address);
+    writeToWindow(mainWindow, 6, 4, port);
+
 }
 
 /**
@@ -283,20 +350,19 @@ void connectionDialog(char *address, char *port) {
  */
 void sendJoinRequest() {
     writeToWindow(connectionWindow, 9, 4, "Sending request to join the game");
-    char name[20];
     char packet[21];
 
     memset(packet, '\0', sizeof(packet));
-    memset(name, '\0', sizeof(name));
+    memset(myName, '\0', sizeof(myName));
 
     writeToWindow(connectionWindow, 11, 4, "Enter your name: ");
     wmove(connectionWindow, 12, 6);
-    scanf("%s", name);
+    scanf("%s", myName);
     // @TODO: this is fucking shit but I have no idea how to make it work with mvwscanw
 //    mvwscanw(connectionWindow, 12, 6, name);
 
     memset(packet, JOIN, 1);
-    strcpy(packet+1, name);
+    strcpy(packet+1, myName);
 
     // Send join request packet
     if(send(sock, packet, sizeof(packet) , 0) < 0) {
@@ -331,6 +397,7 @@ void receiveJoinResponse() {
 
         // Save client's character ID
         myId = responseCode;
+        strcpy(playerList[myId], myName);
 
         windowDeleteAction(connectionWindow);
         refresh();
@@ -369,6 +436,17 @@ void waitForStartPacket(int *startX, int *startY) {
     refresh();
 }
 
+void drawPlayersLoop() {
+    int i = 0;
+    while (1) {
+        if((int)oldPlayerLocations[0] == PLAYERS) {
+            i++;
+//            writeToWindow(mainWindow, 20+i, 3, "players");
+//            drawPlayers(oldPlayerLocations);
+        }
+    }
+}
+
 /**
  * Creates the window for notifications (chat/server messages)
  */
@@ -403,34 +481,34 @@ void *listenToServer(void *conn) {
     int sock = *(int *) conn;
     ssize_t readSize;
     char message[MAX_PACKET_SIZE];
-    writeToWindow(notificationWindow, ++notificationCounter, 1, "Started listening to the server");
-    FILE *f = fopen("file2.txt", "a");
-    fprintf(f, "%s\n", "WAITING???");
+//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Started listening to the server");
 
     while ((readSize = recv(sock, message, MAX_PACKET_SIZE, 0)) > 0) {
         int packetType = (int)message[0];
 
         switch (packetType) {
             case JOINED:
-//                playerJoinedEvent(message);
+                playerJoinedEvent(message); // @TODO Implement
                 break;
             case PLAYER_DISCONNECTED:
-//                playerDisconnectedEvent(message);
+                playerDisconnectedEvent(message); // @TODO Implement
                 break;
             case END:
-//                endGame();
+//                endGame(); @TODO Implement
                 break;
             case MAP:
                 drawMap(message);
                 break;
             case PLAYERS:
+//                memset(oldPlayerLocations, '\0', MAX_PACKET_SIZE);
+                memcpy(oldPlayerLocations, &message, readSize);
                 drawPlayers(message);
                 break;
             case SCORES:
                 drawScoreTable(message);
                 break;
             case MESSAGE:
-//                handleMessage();
+                handleMessage(message);
                 break;
             default:
                 break;
@@ -439,12 +517,71 @@ void *listenToServer(void *conn) {
         //clear the message buffer
         memset(message, 0, MAX_PACKET_SIZE);
     }
-    fclose(f);
 
     if (readSize == 0) {
         exitWithMessage("Server went offline");
     } else if (readSize == -1) {
         exitWithMessage("Failed to communicate with the server!");
+    }
+
+    return 0;
+}
+
+void *listenToInput(void *conn) {
+    int ch, sendPacket;
+    enum clientMovement_t direction;
+    int i = 0;
+
+    while ((ch = getch())) {
+        i++;
+        char n[300] = {0};
+        sprintf(n, "%d bljatj", i);
+        writeToWindow(mainWindow, 25, 3, n);
+        if(ch != ERR) {
+            sendPacket = 1;
+            direction = UP;
+
+            switch(ch) {
+                case (int)'w':
+                    direction = UP;
+                    break;
+                case (int)'s':
+                    direction = DOWN;
+                    break;
+                case (int)'d':
+                    direction = RIGHT;
+                    break;
+                case (int)'a':
+                    direction = LEFT;
+                    break;
+                case (int)'y':
+                    sendPacket = 0;
+                    sendChatMessage();
+                    break;
+                case (int)'q':
+                    sendPacket = 0;
+//                    exitGame(); // @TODO Implement
+                    break;
+                default:
+                    sendPacket = 0;
+                    break;
+            }
+
+            if(sendPacket) {
+                // Send direction change command
+                char packet[1 + sizeof(int) + 1];
+
+                // Prepare the packet
+                memset(packet, '\0', sizeof(packet));
+                memset(packet, MOVE, 1);
+                memcpy(packet+1, &ch, sizeof(int));
+                memset(packet+1+sizeof(int), direction, 1);
+
+                if(send(sock, packet, sizeof(packet) , 0) < 0) {
+                    exitWithMessage("Request has failed. Please check your internet connection and try again.");
+                }
+            }
+        }
     }
 
     return 0;
@@ -460,6 +597,8 @@ void initCurses() {
     refresh();
     noecho(); // Don't echo any keypresses
     curs_set(FALSE); // Don't display a cursor
+    cbreak();
+    timeout(100);
 
     start_color();
 
@@ -496,9 +635,11 @@ void initCurses() {
  * @param map
  */
 void drawMap(char *map) {
-    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received map from the server");
+//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received map from the server");
 
+    char newmap[MAX_PACKET_SIZE] = {0};
     map++;
+    memcpy(newmap, map, mapW * mapH);
 
     for (int i = 0; i < mapH; ++i) {
         for (int j = 0; j < mapW; ++j) {
@@ -506,6 +647,9 @@ void drawMap(char *map) {
             int blockType = (int)*((map+j)+i*mapW);
 
             switch (blockType) {
+                case None:
+                    mvwaddch(mainWindow, i+1, j+1, ' ');
+                    break;
                 case Wall:
                     mvwaddch(mainWindow, i+1, j+1, 97 | A_ALTCHARSET);
                     break;
@@ -529,9 +673,54 @@ void drawMap(char *map) {
         }
     }
 
-    wrefresh(mainWindow);
     refresh();
+    wrefresh(mainWindow);
 }
+
+/**
+ * @param mapH
+ * @param mapW
+ * @param map
+ */
+void playerJoinedEvent(char *event) {
+    event++;
+
+    int playerId;
+    memcpy((void *) &playerId, (void *) *&event, sizeof(playerId));
+    event += sizeof(playerId);
+
+    char name[21] = {0};
+    memcpy(name, *&event, 20);
+
+    char msg[300] = {0};
+    sprintf(msg, "Player %s joined the game!", name);
+
+    strcpy(playerList[playerId], name);
+
+    writeToWindow(notificationWindow, ++notificationCounter, 1, msg);
+}
+
+/**
+ * @param mapH
+ * @param mapW
+ * @param map
+ */
+void playerDisconnectedEvent(char *event) {
+    event++;
+
+    int playerId;
+    memcpy((void *) &playerId, (void *) *&event, sizeof(playerId));
+    event += sizeof(playerId);
+
+    char msg[300] = {0};
+    sprintf(msg, "Player %s left the game!", playerList[playerId]);
+
+//    strcpy(playerList[playerId], '\0');
+//    memset(playerList[playerId][0], '\0', 21);
+
+    writeToWindow(notificationWindow, ++notificationCounter, 1, msg);
+}
+
 
 /**
  * Main method for player drawing
@@ -541,7 +730,7 @@ void drawMap(char *map) {
  * @param map
  */
 void drawPlayers(char *players) {
-    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received players from the server");
+//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received players from the server");
 
     players++;
 
@@ -567,9 +756,9 @@ void drawPlayers(char *players) {
         memcpy((void *) &playerType, (void *) *&players, 1);
         players++;
 
-        // Convert to integers (and round) as sadly we can not represent floats in ncurses
-        int integerPosX = (int)roundf(playerX);
-        int integerPosY = (int)roundf(playerY);
+        // Convert to integers as sadly we can not represent floats in ncurses
+        int integerPosX = (int)playerX;
+        int integerPosY = (int)playerY;
 
         // Default color (pacman)
         int usePair = GREEN_PAIR;
@@ -613,7 +802,7 @@ void drawPlayers(char *players) {
  * @param map
  */
 void drawScoreTable(char *scores) {
-    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received scores from the server");
+//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received scores from the server");
 
     scores++;
 
@@ -645,6 +834,48 @@ void drawScoreTable(char *scores) {
         if(playerId == myId) {
             wattroff(scoreBoardWindow, COLOR_PAIR(GREEN_PAIR));
         }
+    }
+
+    refresh();
+}
+
+/**
+ * Main method for reading and displaying user/server messages
+ *
+ * @param mapH
+ * @param mapW
+ * @param map
+ *
+ * @TODO finish this after no more debug messages are needed
+ */
+void handleMessage(char *message) {
+//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received scores from the server");
+
+    message++;
+
+    int senderId, messageLength;
+
+    memcpy((void *) &senderId, (void *) *&message, sizeof(senderId));
+    message += sizeof(senderId);
+    memcpy((void *) &messageLength, (void *) *&message, sizeof(messageLength));
+    message += sizeof(messageLength);
+
+    char msg[messageLength];
+    memcpy((void *) &msg, (void *) *&message, messageLength);
+
+
+    if(senderId == myId) {
+        wattron(notificationWindow, COLOR_PAIR(GREEN_PAIR));
+    }
+
+    char formattedMsg[MAX_PACKET_SIZE] = {0};
+
+    sprintf(formattedMsg, "%s: %s", playerList[senderId], msg);
+
+    writeToWindow(notificationWindow, ++notificationCounter, 1, formattedMsg);
+
+    if(senderId == myId) {
+        wattroff(notificationWindow, COLOR_PAIR(GREEN_PAIR));
     }
 
     refresh();
