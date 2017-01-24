@@ -98,11 +98,10 @@ void *listenToServer(void*);
 void *listenToInput(void*);
 void sendJoinRequest();
 void receiveJoinResponse();
-void sendTextNotification(char[]);
 void initCurses();
 void deleteAllWindows();
 void connectionDialog(char*, char*);
-void writeToWindow(WINDOW*, int, int, char[]);
+void writeToWindow(WINDOW*, int, int, char[], int, int);
 void windowDeleteAction(WINDOW*);
 void waitForStartPacket(int*, int*);
 void drawMap(char*);
@@ -135,7 +134,7 @@ int main() {
     int startX, startY;
     mapW = 0;
     mapH = 0;
-    notificationCounter = 0;
+    notificationCounter = 1;
     myId = 0;
 
     for (int i = 0; i < 256; ++i) {
@@ -161,7 +160,7 @@ int main() {
     server.sin_family = AF_INET;
     server.sin_port = htons(atoi(serverPort));
 
-    writeToWindow(connectionWindow, 7, 4, "Connecting to the server...");
+    writeToWindow(connectionWindow, 7, 4, "Connecting to the server...", 1, 0);
 
     //Connect to remote server
     if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0) {
@@ -263,7 +262,7 @@ void sendChatMessage() {
     sendMessageWindow = newwin(5, NOTIFICATION_WIDTH, NOTIFICATION_HEIGHT + 3, NOTIFICATION_OFFSET);
     box(sendMessageWindow, 0, 0);
     scrollok(sendMessageWindow, TRUE);
-    writeToWindow(sendMessageWindow, 0, 0, "Write your message ");
+    writeToWindow(sendMessageWindow, 0, 0, "Write your message ", 1, 0);
     echo();
     curs_set(TRUE);
     cbreak();
@@ -303,18 +302,26 @@ void sendChatMessage() {
  * @param x
  * @param text
  */
-void writeToWindow(WINDOW* window, int y, int x, char text[]) {
+void writeToWindow(WINDOW* window, int y, int x, char text[], int lc, int increaseCounter) {
     // Check if we are going out of bounds in the notifications and reset the window
-    if(notificationCounter > NOTIFICATION_HEIGHT - 1) {
+    if(notificationCounter + lc > NOTIFICATION_HEIGHT - 1) {
         werase(notificationWindow);
-        notificationCounter = 0;
-        box(window, 0, 0);
-        writeToWindow(notificationWindow, 0, 0, "Messages ");
+        notificationCounter = 1;
+        box(notificationWindow, 0, 0);
+        writeToWindow(notificationWindow, 0, 0, "Messages ", 1, 0);
+        y = notificationCounter;
+        refresh();
     }
 
     // Print the actual text
     mvwprintw(window, y, x, text);
     wrefresh(window);
+
+    // We need this check so that we do not get trashed with useless empty lines in case of positioned text output
+    // For example, "Messages" or "Scoreboard" should not increase the counter
+    if(increaseCounter) {
+        notificationCounter += lc;
+    }
 }
 
 /**
@@ -339,13 +346,13 @@ void connectionDialog(char *address, char *port) {
 
     // Get the input from the user - server IP and port
 
-    writeToWindow(connectionWindow, 0, 0, "Connect to a server ");
-    writeToWindow(connectionWindow, 2, 4, "Enter IP address to connect to: ");
+    writeToWindow(connectionWindow, 0, 0, "Connect to a server ", 1, 0);
+    writeToWindow(connectionWindow, 2, 4, "Enter IP address to connect to: ", 1, 0);
 
     wmove(connectionWindow, 3, 6);
     wgetstr(connectionWindow, *&address);
 
-    writeToWindow(connectionWindow, 5, 4, "Enter server port: ");
+    writeToWindow(connectionWindow, 5, 4, "Enter server port: ", 1, 0);
     wmove(connectionWindow, 6, 6);
     wgetstr(connectionWindow, *&port);
 }
@@ -354,14 +361,14 @@ void connectionDialog(char *address, char *port) {
  * Send join request packet to the server
  */
 void sendJoinRequest() {
-    writeToWindow(connectionWindow, 9, 4, "Sending request to join the game");
+    writeToWindow(connectionWindow, 9, 4, "Sending request to join the game", 1, 0);
     char packet[21];
 
     memset(packet, '\0', sizeof(packet));
     memset(myName, '\0', sizeof(myName));
 
     // Get the name from the user
-    writeToWindow(connectionWindow, 11, 4, "Enter your name: ");
+    writeToWindow(connectionWindow, 11, 4, "Enter your name: ", 1, 0);
     wmove(connectionWindow, 12, 6);
     wgetstr(connectionWindow, myName);
 
@@ -420,7 +427,7 @@ void receiveJoinResponse() {
 void waitForStartPacket(int *startX, int *startY) {
     noecho();
     curs_set(FALSE);
-    writeToWindow(mainWindow, 2, 3, "Connected and waiting for the game to start...");
+    writeToWindow(mainWindow, 2, 3, "Connected and waiting for the game to start...", 1, 0);
 
     ssize_t readSize;
     char packet[MAX_PACKET_SIZE];
@@ -467,7 +474,7 @@ void createNotificationWindow() {
     notificationWindow = newwin(NOTIFICATION_HEIGHT, NOTIFICATION_WIDTH, 3, NOTIFICATION_OFFSET);
     box(notificationWindow, 0, 0);
     scrollok(notificationWindow, TRUE);
-    writeToWindow(notificationWindow, 0, 0, "Messages ");
+    writeToWindow(notificationWindow, 0, 0, "Messages ", 1, 0);
     refresh();
 }
 
@@ -479,7 +486,7 @@ void createScoreBoardWindow() {
     scoreBoardWindow = newwin(SCORE_HEIGHT, SCORE_WIDTH, 3, xOffset);
     box(scoreBoardWindow, 0, 0);
     scrollok(scoreBoardWindow, TRUE);
-    writeToWindow(scoreBoardWindow, 0, 0, "Scoreboard ");
+    writeToWindow(scoreBoardWindow, 0, 0, "Scoreboard ", 1, 0);
     refresh();
 }
 
@@ -751,7 +758,7 @@ void playerJoinedEvent(char *event) {
 
     strcpy(playerList[playerId], name);
 
-    writeToWindow(notificationWindow, ++notificationCounter, 1, msg);
+    writeToWindow(notificationWindow, notificationCounter, 1, msg, 1, 1);
 }
 
 /**
@@ -774,7 +781,7 @@ void playerDisconnectedEvent(char *event) {
     char msg[300] = {0};
     sprintf(msg, "Player %s left the game!", playerList[playerId]);
 
-    writeToWindow(notificationWindow, ++notificationCounter, 1, msg);
+    writeToWindow(notificationWindow, notificationCounter, 1, msg, 1, 1);
 }
 
 
@@ -891,8 +898,8 @@ void drawScoreTable(char *scores) {
             wattron(scoreBoardWindow, COLOR_PAIR(GREEN_PAIR));
         }
 
-        writeToWindow(scoreBoardWindow, i+1, 1, printId);
-        writeToWindow(scoreBoardWindow, i+1, 25, printScore);
+        writeToWindow(scoreBoardWindow, i+1, 1, printId, 1, 0);
+        writeToWindow(scoreBoardWindow, i+1, 25, printScore, 1, 0);
 
         if(playerId == myId) {
             wattroff(scoreBoardWindow, COLOR_PAIR(GREEN_PAIR));
@@ -933,10 +940,9 @@ void handleMessage(char *message) {
     char formattedMsg[MAX_PACKET_SIZE] = {0};
     sprintf(formattedMsg, "%s: %s", playerList[senderId], msg);
 
+    // Message line count
     int lineCount = (int)ceil(strlen(formattedMsg) / NOTIFICATION_WIDTH) + 1;
-    notificationCounter += lineCount;
-    writeToWindow(notificationWindow, notificationCounter, 1, formattedMsg);
-    notificationCounter += lineCount;
+    writeToWindow(notificationWindow, notificationCounter, 1, formattedMsg, lineCount, 1);
 
     if(senderId == myId) {
         wattroff(notificationWindow, COLOR_PAIR(GREEN_PAIR));
