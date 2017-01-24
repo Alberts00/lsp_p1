@@ -113,18 +113,7 @@ void playerDisconnectedEvent(char*);
 void createNotificationWindow();
 void createScoreBoardWindow();
 void epicDebug(char*);
-void drawPlayersLoop();
 void sendChatMessage();
-
-void *safe_malloc(size_t size) {
-    void *p = malloc(size);
-    if (!p) { //Ja alokācija neizdevās, izdrukājam iemeslu, kurš iegūts no errno
-        fprintf(stderr, "%s\n", strerror(errno));
-
-        exit(EXIT_FAILURE);
-    }
-    return p;
-}
 
 void exitWithMessage(char error[]) {
     deleteAllWindows();
@@ -174,7 +163,6 @@ void sendChatMessage() {
 
     wmove(sendMessageWindow, 1, 1);
     wgetstr(sendMessageWindow, msg);
-//    scanw(msg);
 
     int l = strlen(msg);
 
@@ -189,8 +177,6 @@ void sendChatMessage() {
     if(send(sock, packet, sizeof(packet) , 0) < 0) {
         exitWithMessage("Join request has failed. Please check your internet connection and try again.");
     }
-
-    writeToWindow(mainWindow, 28, 1, msg);
 
     cbreak();
     noecho();
@@ -279,8 +265,6 @@ int main(int argc, char *argv[]) {
 
     // Send commands to the server
 
-    drawPlayersLoop();
-
     pthread_join(threadId, NULL);
     pthread_join(threadId2, NULL);
 
@@ -303,46 +287,20 @@ void connectionDialog(char *address, char *port) {
 
     echo();
     curs_set(TRUE);
-//    cbreak();
 
     connectionWindow = newwin(CONNECTION_HEIGHT, CONNECTION_WIDTH, offsetY, offsetX);
 
     box(connectionWindow, 0, 0);
 
-
-    // @TODO: this is fucking shit but I have no idea how to make it work with mvwscanw
-
-
     writeToWindow(connectionWindow, 0, 0, "Connect to a server ");
     writeToWindow(connectionWindow, 2, 4, "Enter IP address to connect to: ");
-//    wmove(connectionWindow, 3, 6);
-//    scanf("%s", address);
 
-
-//    refresh();
-    mvwscanw(connectionWindow, 4, 6, *&address);
+    wmove(connectionWindow, 4, 6);
+    wgetstr(connectionWindow, *&address);
 
     writeToWindow(connectionWindow, 5, 4, "Enter server port: ");
-    refresh();
-//    mvwscanw(connectionWindow, 6, 6, port);
     wmove(connectionWindow, 6, 6);
-//    scanf("%s", port);
-
-//    strcpy(address, "127.0.0.1");
-//    strcpy(address, "95.68.71.51"); // Alberts
-//    strcpy(address, "149.202.149.77"); // Alberts
-//    strcpy(address, "81.198.119.38"); // Arnolds
-    strcpy(address, "192.168.120.38"); // VM
-//    strcpy(address, "192.168.120.182"); // SW
-//    strcpy(address, "192.168.120.93"); // SW
-    strcpy(port, "8888");
-//    strcpy(port, "2017"); // Arnolds
-//    strcpy(port, "3000"); // Arnolds
-//    nocbreak();
-
-    writeToWindow(mainWindow, 5, 4, address);
-    writeToWindow(mainWindow, 6, 4, port);
-
+    wgetstr(connectionWindow, *&port);
 }
 
 /**
@@ -357,9 +315,7 @@ void sendJoinRequest() {
 
     writeToWindow(connectionWindow, 11, 4, "Enter your name: ");
     wmove(connectionWindow, 12, 6);
-    scanf("%s", myName);
-    // @TODO: this is fucking shit but I have no idea how to make it work with mvwscanw
-//    mvwscanw(connectionWindow, 12, 6, name);
+    wgetstr(connectionWindow, myName);
 
     memset(packet, JOIN, 1);
     strcpy(packet+1, myName);
@@ -419,9 +375,8 @@ void waitForStartPacket(int *startX, int *startY) {
         if(startPacket[0] == START) {
             mapW = (int)startPacket[1];
             mapH = (int)startPacket[2];
-            // @TODO: FIX
-//            *startX = (int)startPacket[3];
-//            *startY = (int)startPacket[4];
+            *startX = (int)startPacket[3];
+            *startY = (int)startPacket[4];
 
             break;
         }
@@ -434,17 +389,6 @@ void waitForStartPacket(int *startX, int *startY) {
     box(mainWindow, 0, 0);
     wrefresh(mainWindow);
     refresh();
-}
-
-void drawPlayersLoop() {
-    int i = 0;
-    while (1) {
-        if((int)oldPlayerLocations[0] == PLAYERS) {
-            i++;
-//            writeToWindow(mainWindow, 20+i, 3, "players");
-//            drawPlayers(oldPlayerLocations);
-        }
-    }
 }
 
 /**
@@ -500,8 +444,6 @@ void *listenToServer(void *conn) {
                 drawMap(message);
                 break;
             case PLAYERS:
-//                memset(oldPlayerLocations, '\0', MAX_PACKET_SIZE);
-                memcpy(oldPlayerLocations, &message, readSize);
                 drawPlayers(message);
                 break;
             case SCORES:
@@ -534,9 +476,6 @@ void *listenToInput(void *conn) {
 
     while ((ch = getch())) {
         i++;
-        char n[300] = {0};
-        sprintf(n, "%d bljatj", i);
-        writeToWindow(mainWindow, 25, 3, n);
         if(ch != ERR) {
             sendPacket = 1;
             direction = UP;
@@ -635,8 +574,6 @@ void initCurses() {
  * @param map
  */
 void drawMap(char *map) {
-//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received map from the server");
-
     char newmap[MAX_PACKET_SIZE] = {0};
     map++;
     memcpy(newmap, map, mapW * mapH);
@@ -730,8 +667,6 @@ void playerDisconnectedEvent(char *event) {
  * @param map
  */
 void drawPlayers(char *players) {
-//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received players from the server");
-
     players++;
 
     int playerCount;
@@ -802,8 +737,6 @@ void drawPlayers(char *players) {
  * @param map
  */
 void drawScoreTable(char *scores) {
-//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received scores from the server");
-
     scores++;
 
     int scoreCount;
@@ -849,8 +782,6 @@ void drawScoreTable(char *scores) {
  * @TODO finish this after no more debug messages are needed
  */
 void handleMessage(char *message) {
-//    writeToWindow(notificationWindow, ++notificationCounter, 1, "Received scores from the server");
-
     message++;
 
     int senderId, messageLength;
