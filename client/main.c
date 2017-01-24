@@ -54,7 +54,6 @@ int mapW;
 int mapH;
 int notificationCounter;
 int myId;
-char oldPlayerLocations[MAX_PACKET_SIZE];
 char playerList[256][21];
 char myName[21] = {0};
 
@@ -105,6 +104,7 @@ void writeToWindow(WINDOW*, int, int, char[]);
 void windowDeleteAction(WINDOW*);
 void waitForStartPacket(int*, int*);
 void drawMap(char*);
+void exitWithMessage(char[]);
 void drawPlayers(char*);
 void drawScoreTable(char*);
 void handleMessage(char*);
@@ -116,6 +116,72 @@ void epicDebug(char*);
 void sendChatMessage();
 void endGame();
 void exitGame();
+
+int main(int argc, char *argv[]) {
+    struct sockaddr_in server;
+    char serverAddress[16], serverPort[6];
+    int startX, startY;
+    mapW = 0;
+    mapH = 0;
+    notificationCounter = 0;
+    myId = 0;
+
+    for (int i = 0; i < 256; ++i) {
+        for (int j = 0; j < 21; ++j) {
+            playerList[i][j] = '\0';
+        }
+    }
+
+    initCurses();
+
+    connectionDialog(serverAddress, serverPort);
+
+    //Create socket
+    sock = socket(AF_INET , SOCK_STREAM , 0);
+    if (sock == -1) {
+        exitWithMessage("Could not create socket");
+    }
+
+    server.sin_addr.s_addr = inet_addr(serverAddress);
+    server.sin_family = AF_INET;
+    server.sin_port = htons(atoi(serverPort));
+
+    writeToWindow(connectionWindow, 7, 4, "Connecting to the server...");
+
+    //Connect to remote server
+    if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0) {
+        exitWithMessage("Connection failed");
+    }
+
+    sendJoinRequest();
+    receiveJoinResponse();
+    waitForStartPacket(&startX, &startY);
+
+    createNotificationWindow();
+    createScoreBoardWindow();
+    // Start packet received, we can start listening to the server and sending our data
+
+    // Start a new thread to listen to the server
+    pthread_t serverThreadId;
+    if (pthread_create(&serverThreadId, NULL, listenToServer, (void *) &sock) < 0) {
+        exitWithMessage("Error: Could not create a thread");
+    }
+
+    // Start a new thread to draw players
+    pthread_t inputThreadId;
+    if (pthread_create(&inputThreadId, NULL, listenToInput, (void *) &sock) < 0) {
+        exitWithMessage("Error: Could not create a thread");
+    }
+
+    // Send commands to the server
+
+    pthread_join(serverThreadId, NULL);
+    pthread_join(inputThreadId, NULL);
+
+    close(sock);
+
+    return 0;
+}
 
 void exitWithMessage(char msg[]) {
     deleteAllWindows();
@@ -204,75 +270,6 @@ void writeToWindow(WINDOW* window, int y, int x, char text[]) {
 
     mvwprintw(window, y, x, text);
     wrefresh(window);
-}
-
-int main(int argc, char *argv[]) {
-    struct sockaddr_in server;
-    char serverAddress[16], serverPort[6];
-    int startX, startY;
-    mapW = 0;
-    mapH = 0;
-    notificationCounter = 0;
-    myId = 0;
-
-    for (int i = 0; i < 256; ++i) {
-        for (int j = 0; j < 21; ++j) {
-            playerList[i][j] = '\0';
-        }
-    }
-
-    // Reset player locations variable
-    memset(oldPlayerLocations, '\0', MAX_PACKET_SIZE);
-
-    initCurses();
-
-    connectionDialog(serverAddress, serverPort);
-
-    //Create socket
-    sock = socket(AF_INET , SOCK_STREAM , 0);
-    if (sock == -1) {
-        exitWithMessage("Could not create socket");
-    }
-
-    server.sin_addr.s_addr = inet_addr(serverAddress);
-    server.sin_family = AF_INET;
-    server.sin_port = htons(atoi(serverPort));
-
-    writeToWindow(connectionWindow, 7, 4, "Connecting to the server...");
-
-    //Connect to remote server
-    if (connect(sock , (struct sockaddr *)&server , sizeof(server)) < 0) {
-        exitWithMessage("Connection failed");
-    }
-
-    sendJoinRequest();
-    receiveJoinResponse();
-    waitForStartPacket(&startX, &startY);
-
-    createNotificationWindow();
-    createScoreBoardWindow();
-    // Start packet received, we can start listening to the server and sending our data
-
-    // Start a new thread to listen to the server
-    pthread_t threadId;
-    if (pthread_create(&threadId, NULL, listenToServer, (void *) &sock) < 0) {
-        exitWithMessage("Error: Could not create a thread");
-    }
-
-    // Start a new thread to draw players
-    pthread_t threadId2;
-    if (pthread_create(&threadId2, NULL, listenToInput, (void *) &sock) < 0) {
-        exitWithMessage("Error: Could not create a thread");
-    }
-
-    // Send commands to the server
-
-    pthread_join(threadId, NULL);
-    pthread_join(threadId2, NULL);
-
-    close(sock);
-
-    return 0;
 }
 
 /**
@@ -368,23 +365,26 @@ void waitForStartPacket(int *startX, int *startY) {
     writeToWindow(mainWindow, 2, 3, "Connected and waiting for the game to start...");
 
     ssize_t readSize;
-    char startPacket[MAX_PACKET_SIZE];
+    char packet[MAX_PACKET_SIZE];
 
-    while ((readSize = recv(sock, startPacket, MAX_PACKET_SIZE, 0)) > 0) {
+    while ((readSize = recv(sock, packet, MAX_PACKET_SIZE, 0)) > 0) {
         waddch(mainWindow, '.');
         wrefresh(mainWindow);
 
-        if(startPacket[0] == START) {
-            mapW = (int)startPacket[1];
-            mapH = (int)startPacket[2];
-            *startX = (int)startPacket[3];
-            *startY = (int)startPacket[4];
+        if(packet[0] == START) {
+            mapW = (int)packet[1];
+            mapH = (int)packet[2];
+            *startX = (int)packet[3];
+            *startY = (int)packet[4];
 
             break;
+        } else if (packet[0] == JOINED) {
+            // @TODO this needs additional check. JOINED packet is not received
+            playerJoinedEvent(packet);
         }
 
         //clear the message buffer
-        memset(startPacket, 0, MAX_PACKET_SIZE);
+        memset(packet, 0, MAX_PACKET_SIZE);
     }
 
     werase(mainWindow);
@@ -542,7 +542,7 @@ void exitGame() {
 }
 
 void endGame() {
-    //@TODO endgame logic
+    exitWithMessage("Game ended! Thank you for playing.");
 }
 
 /**
@@ -570,6 +570,8 @@ void initCurses() {
     init_pair(YELLOW_PAIR, COLOR_YELLOW, COLOR_BLACK);
     init_pair(BLUE_PAIR, COLOR_BLUE, COLOR_BLACK);
     init_pair(WHITE_PAIR, COLOR_WHITE, COLOR_BLACK);
+
+    bkgd(WHITE_PAIR);
 
     // Center the inner window
     offsetX = (COLS - WORLD_WIDTH) / 2;
@@ -797,8 +799,6 @@ void drawScoreTable(char *scores) {
  * @param mapH
  * @param mapW
  * @param map
- *
- * @TODO finish this after no more debug messages are needed
  */
 void handleMessage(char *message) {
     message++;
@@ -812,7 +812,6 @@ void handleMessage(char *message) {
 
     char msg[messageLength];
     memcpy((void *) &msg, (void *) *&message, messageLength);
-
 
     if(senderId == myId) {
         wattron(notificationWindow, COLOR_PAIR(GREEN_PAIR));
