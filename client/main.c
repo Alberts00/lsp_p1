@@ -400,7 +400,6 @@ void createNotificationWindow() {
     box(notificationWindow, 0, 0);
     scrollok(notificationWindow, TRUE);
     writeToWindow(notificationWindow, 0, 0, "Messages ");
-    wbkgd(notificationWindow, WHITE_PAIR);
     refresh();
 }
 
@@ -413,7 +412,6 @@ void createScoreBoardWindow() {
     box(scoreBoardWindow, 0, 0);
     scrollok(scoreBoardWindow, TRUE);
     writeToWindow(scoreBoardWindow, 0, 0, "Scoreboard ");
-    wbkgd(scoreBoardWindow, WHITE_PAIR);
     refresh();
 }
 
@@ -572,15 +570,11 @@ void initCurses() {
     init_pair(BLUE_PAIR, COLOR_BLUE, COLOR_BLACK);
     init_pair(WHITE_PAIR, COLOR_WHITE, COLOR_BLACK);
 
-    bkgd(WHITE_PAIR);
-
     // Center the inner window
     offsetX = (COLS - WORLD_WIDTH) / 2;
     offsetX = offsetX + (NOTIFICATION_WIDTH - offsetX) + NOTIFICATION_OFFSET;
 
     mainWindow = newwin(WORLD_HEIGHT, WORLD_WIDTH, 0, offsetX);
-
-    wbkgd(mainWindow, WHITE_PAIR);
 
     scrollok(mainWindow, TRUE);
 
