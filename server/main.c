@@ -106,7 +106,7 @@ int startServer();
 
 void initPacket(char *, ssize_t *);
 
-void sendMassPacket(char *, ssize_t , clientInfo_t *);
+void sendMassPacket(char *, ssize_t, clientInfo_t *);
 
 clientInfo_t *initClientData(int, struct in_addr);
 
@@ -116,13 +116,13 @@ void *gameController(void *a);
 
 void prepareStartPacket(char *, clientInfo_t *);
 
-void sleep_ms(int );
+void sleep_ms(int);
 
 unsigned int getPlayerCount();
 
 void stripSpecialCharacters(int *, char *);
 
-void sendMessage(int , int , char *);
+void sendMessage(int, int, char *);
 
 void processQuit(clientInfo_t *);
 
@@ -132,7 +132,7 @@ bool sameTile(clientInfo_t *, clientInfo_t *);
 
 void reloadMaps();
 
-void threadErrorHandler(char errormsg[], int , clientInfo_t *);
+void threadErrorHandler(char errormsg[], int, clientInfo_t *);
 
 void debugPacket(char *, const char *, const char *);
 
@@ -187,10 +187,12 @@ typedef struct mapList {                            //Contains list of loaded ma
  * Globals
  */
 clientInfo_t *clientArr[MAX_PLAYERS];   // Array holding all player data
+pthread_mutex_t clientArrLock;          // Mutex locking clientArr
 int PORT;                               // Server port (-p)
 char MAPDIR[FILENAME_MAX];              // Directory containing maps (-m)
 mapList_t *MAP_HEAD;                    // Pointer to the first MAP
 bool gameStarted;                       // True if the game is in progress
+pthread_mutex_t gameStartedock;         // Mutex locking gameStarted
 mapList_t *MAP_CURRENT;                 // Pointer to the current loaded MAP
 enum debugLevel_t debugLevel;           // Holds debugging level of the server (-v/-vv)
 
@@ -225,14 +227,15 @@ void exitWithMessage(char error[]) {
  */
 clientInfo_t *initClientData(int sock, struct in_addr ip) {
     static unsigned int CLIENT_ID_ITERATOR = 1;
-
+    pthread_mutex_lock(&clientArrLock);
     clientInfo_t *client = safeMalloc(sizeof(clientInfo_t));
     client->id = CLIENT_ID_ITERATOR++;  // Player ID
     client->sock = sock;                // Player TCP socket
     client->ip = ip;                    // Player IP address
     client->active = false;             // Active will be set to true only when game starts and player is sent STARt packet
-    client->packet_rcv_thread_id=0;     // Client packet receiver thread
-    client->packet_sndr_thread_id=0;    // Client packet sender thread
+    client->packet_rcv_thread_id = 0;     // Client packet receiver thread
+    client->packet_sndr_thread_id = 0;    // Client packet sender thread
+    pthread_mutex_unlock(&clientArrLock);
     return client;
 }
 
@@ -240,13 +243,15 @@ clientInfo_t *initClientData(int sock, struct in_addr ip) {
  * Returns client pointer to array or NULL if no free spots
  */
 clientInfo_t *findClientSpot(clientInfo_t *client) {
-
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] == NULL) {
             clientArr[i] = client;
+            pthread_mutex_unlock(&clientArrLock);
             return client;
         }
     }
+    pthread_mutex_unlock(&clientArrLock);
     return NULL;
 }
 
@@ -254,12 +259,16 @@ clientInfo_t *findClientSpot(clientInfo_t *client) {
  * Returns true if the name is in use, false otherwise
  */
 bool isNameUsed(char *name) {
-
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] != NULL) {
-            if (strcmp(clientArr[i]->name, name) == 0) return true;
+            if (strcmp(clientArr[i]->name, name) == 0) {
+                pthread_mutex_unlock(&clientArrLock);
+                return true;
+            }
         }
     }
+    pthread_mutex_unlock(&clientArrLock);
     return false;
 }
 
@@ -270,6 +279,7 @@ void initPacket(char *buffer, ssize_t *bufferPointer) {
     *bufferPointer = 0;
     memset(buffer, 0, MAX_PACKET_SIZE);
 }
+
 /**
  * Receives data from buffer, received data is stored in buffer
  */
@@ -292,8 +302,6 @@ void sendPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
         debugPacket(buffer, __func__, strerror(errno));
     }
 }
-
-
 
 
 /**
@@ -372,15 +380,17 @@ void debugPacket(char *buffer, const char *caller, const char *errorno) {
 void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
     printf("INFO: %s: %s\n", inet_ntoa(client->ip), errormsg);
     close(client->sock);
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (client == clientArr[i]) {
             clientArr[i] = NULL;
             sendPlayerDisconnect(client);
         }
     }
-    if (client->packet_rcv_thread_id!=0) pthread_cancel(client->packet_rcv_thread_id);
-    if (client->packet_sndr_thread_id!=0) pthread_cancel(client->packet_sndr_thread_id);
+    if (client->packet_rcv_thread_id != 0) pthread_cancel(client->packet_rcv_thread_id);
+    if (client->packet_sndr_thread_id != 0) pthread_cancel(client->packet_sndr_thread_id);
     free(client);
+    pthread_mutex_unlock(&clientArrLock);
     pthread_exit(&retval);
 }
 
@@ -390,7 +400,7 @@ void threadErrorHandler(char errormsg[], int retval, clientInfo_t *client) {
  * Resulting string stored in message with messageLength updated
  */
 void stripSpecialCharacters(int *messageLength, char *message) {
-    int newMessageLength = 0;
+    size_t newMessageLength = 0;
     char newMessage[MAX_PACKET_SIZE];
     for (int i = 0; i < *messageLength; i++) {
         if (message[i] >= 32 && message[i] <= 126) {
@@ -398,8 +408,7 @@ void stripSpecialCharacters(int *messageLength, char *message) {
         }
     }
     newMessage[newMessageLength++] = '\0'; //Make sure that the message ends with null character
-    *messageLength = newMessageLength;
-    memcpy(message, newMessage, (size_t) newMessageLength);
+    memcpy(message, newMessage, newMessageLength);
 }
 
 
@@ -537,6 +546,8 @@ void addMap(FILE *mapfile, char name[256]) {
     } while (c != EOF);
     map->width = x;
     map->height = ++y;
+    memset(map->mapDefault, 0, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
+    memcpy(map->mapDefault, map->map, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
     if (debugLevel >= VERBOSE)
         printf("VERBOSE:\tMap %s loaded, length x=%d, y=%d\n", name, map->width, map->height);
 
@@ -569,7 +580,7 @@ int startServer() {
     }
     server.sin_family = AF_INET;
     server.sin_addr.s_addr = INADDR_ANY; // Listen to all interfaces
-    server.sin_port = htons((uint16_t)PORT);       // Listening port
+    server.sin_port = htons((uint16_t) PORT);       // Listening port
 
     //Binds TCP
     if (bind(socket_desc, (struct sockaddr *) &server, sizeof(server)) < 0) {
@@ -632,12 +643,97 @@ void *gameController(void *a) {
         sleep_ms(TICK_FREQUENCY);
         if (getPlayerCount() >= MIN_PLAYERS || gameStarted) {
             if (TICK == 0) {
+                pthread_mutex_lock(&gameStartedock);
                 gameStarted = true;
+                pthread_mutex_unlock(&gameStartedock);
                 if (debugLevel >= DEBUG) printf("DEBUG:\tGame started, sending START packets\n");
                 sendStartPackets();
             }
-            processTick(&TICK);
             TICK += 1;
+            processTick(&TICK);
+
+            /*
+            * Check if game ending condition is met
+            *  1) Only Ghosts left
+            *  2) Only Pacmans left
+            *  3) No more dots
+            */
+            int ghostCount = 0;
+            int pacmanCount = 0;
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (clientArr[i] && clientArr[i]->active) {
+                    if (clientArr[i]->playerType == Ghost) ghostCount++; //Count ghosts
+                    else if (clientArr[i]->playerType == Pacman) pacmanCount++; //Count pacmans
+                }
+            }
+            //Check if there are any leftover dots
+            bool dotFound = false;
+            for (int i = 0; i < MAP_CURRENT->height; i++) {
+                for (int j = 0; j < MAP_CURRENT->width; j++) {
+                    enum mapObjecT_t mapObject = (enum mapObjecT_t) MAP_CURRENT->map[i][j];
+                    if (mapObject == Dot) {
+                        dotFound = true;
+                        break;
+                    }
+                }
+                if (dotFound) break;
+            }
+
+            // CHECK FOR END GAME
+            bool gameEnd = false;
+            if (ghostCount > 0 && pacmanCount == 0) {
+                /*
+                 * Handles games ending and new map initialization
+                 * Receives winning player type and announces the winner via message
+                 * Starts new game with the next map
+                 */
+                //Send message to all players
+                sendMessage(0, 18, "Ghosts have won!");
+                if (debugLevel >= VERBOSE) printf("VERBOSE:\tGAME END, Ghosts win\n");
+                gameEnd = true;
+
+
+            } // No more pacman ghosts win
+            else if (pacmanCount > 0 && ghostCount == 0 || !dotFound) {
+                sendMessage(0, 18, "Pacmans have won!");
+                if (debugLevel >= VERBOSE) printf("VERBOSE:\tGAME END, Pacmans win\n");
+                gameEnd = true;
+
+            } // No more ghosts pacman win
+
+            if (gameEnd && TICK>3) {
+                /*
+                 * Prepare END packet
+                */
+                char buffer[PACKET_TYPE_SIZE];
+                memset(buffer, 0, MAX_PACKET_SIZE);
+                pthread_mutex_lock(&gameStartedock);
+                pthread_mutex_lock(&clientArrLock);
+                buffer[0] = END;
+                for (int i = 0; i < MAX_PLAYERS; i++) {
+                    if (clientArr[i] && clientArr[i]->active) {
+                        sendPacket(buffer, PACKET_TYPE_SIZE,
+                                   clientArr[i]); //Send END packet to all players which received START
+                        clientArr[i]->active = false; //Deactivate player
+                    }
+                }
+                pthread_mutex_unlock(&clientArrLock);
+                gameStarted = false;
+                pthread_mutex_unlock(&gameStartedock);
+
+                //Reset ticks, map data
+                TICK = 0;
+                // Resets map tiles to default values since they have changed during game
+                memcpy(MAP_CURRENT->map, MAP_CURRENT->mapDefault, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
+                //Go to next map
+                if (MAP_CURRENT->next) {
+                    MAP_CURRENT = MAP_CURRENT->next;
+                } else {
+                    MAP_CURRENT = MAP_HEAD;
+                }
+            }
+
+
             if (debugLevel >= DEBUG) printf("DEBUG:\tTICK %lu\n", TICK);
         }
     }
@@ -657,12 +753,14 @@ void *handle_connection(void *conn) {
     processNewPlayer(clientInfo);
 
     // If the game had already started and the player was not processed during start we have to also send the START packet
+    pthread_mutex_lock(&gameStartedock);
     if (gameStarted && !clientInfo->active) {
         char buffer[MAX_PACKET_SIZE] = {0};
         prepareStartPacket(buffer, clientInfo);
         if (debugLevel >= DEBUG) printf("DEBUG:\t%s joined late, also sending START packet\n", clientInfo->name);
         sendPacket(buffer, 5, clientInfo);
     }
+    pthread_mutex_unlock(&gameStartedock);
 
     // Create seperate game handler threads for client
     // First thread - sends game data to the client (MAP/PLAYERS/SCORE)
@@ -752,6 +850,7 @@ void *playerSender(void *clientP) {
     clientInfo_t *client = (clientInfo_t *) clientP;
     while (true) {
         while (gameStarted) {
+            pthread_mutex_lock(&gameStartedock);
             // Prepare MAP packet
             /*
              * 0 - PACKET TYPE
@@ -779,6 +878,7 @@ void *playerSender(void *clientP) {
             buffer[0] = PLAYERS;
             int objectCount = 0; //Amount of player objects
             bufferPointer = 5; //Start of the player information in buffer
+            pthread_mutex_lock(&clientArrLock);
             for (int i = 0; i < MAX_PLAYERS; i++) {
                 if (clientArr[i] && clientArr[i]->active) {
                     memcpy(buffer + bufferPointer, &clientArr[i]->id, sizeof(int)); //Player ID
@@ -817,9 +917,9 @@ void *playerSender(void *clientP) {
             }
             memcpy(buffer + 1, &objectCount, sizeof(int));
             sendPacket(buffer, bufferPointer, client);
-
+            pthread_mutex_unlock(&clientArrLock);
+            pthread_mutex_unlock(&gameStartedock);
             sleep_ms(TICK_FREQUENCY);
-
         }
         sleep_ms(TICK_FREQUENCY);
     }
@@ -878,7 +978,6 @@ void *playerReceiver(void *client) {
 }
 
 
-
 void sendPlayerDisconnect(clientInfo_t *client) {
     char buffer[MAX_PACKET_SIZE] = {0};
     buffer[0] = PLAYER_DISCONNECTED;
@@ -887,16 +986,17 @@ void sendPlayerDisconnect(clientInfo_t *client) {
 }
 
 
-
 /*
  * Send the passed packet to everyone except the passed client
  */
 void sendMassPacket(char *buffer, ssize_t bufferPointer, clientInfo_t *client) {
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i] && clientArr[i] != client) {
             sendPacket(buffer, bufferPointer, clientArr[i]);
         }
     }
+    pthread_mutex_unlock(&clientArrLock);
 }
 
 
@@ -910,7 +1010,7 @@ void sendMessage(int playerId, int messageLength, char *message) {
             printf("VERBOSE:\t%d is sending too large messages\n", playerId);
         }
     }
-    stripSpecialCharacters(&messageLength, message);
+    if (playerId != 0) stripSpecialCharacters(&messageLength, message);
 
     //Prepare MESSAGE packet
     /*
@@ -926,12 +1026,13 @@ void sendMessage(int playerId, int messageLength, char *message) {
     }
     int bufferPointer = PACKET_TYPE_SIZE + sizeof(int) + sizeof(int) + messageLength;
 
-
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (clientArr[i]) {
             sendPacket(buffer, bufferPointer, clientArr[i]);
         }
     }
+    pthread_mutex_unlock(&clientArrLock);
 
 }
 
@@ -986,6 +1087,7 @@ unsigned int getActivePlayerCount() {
  */
 void sendStartPackets() {
     char buffer[MAX_PACKET_SIZE];
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         memset(buffer, 0, MAX_PACKET_SIZE);
         if (clientArr[i] != NULL) {
@@ -994,6 +1096,7 @@ void sendStartPackets() {
             sendPacket(buffer, 5, clientArr[i]);
         }
     }
+    pthread_mutex_unlock(&clientArrLock);
 }
 
 /**
@@ -1168,84 +1271,12 @@ void resetMapObject(clientInfo_t *a) {
     MAP_CURRENT->map[(int) a->y][(int) a->x] = None;
 }
 
-/**
- * Function which handles games ending and new map initialization
- * Receives winning player type and announces the winner via message
- * Starts new game with the next map
- */
-void endGame(enum playerType_t playerType, unsigned long int *TICK) {
-    //Send message to all players
-    int messageLength = 17;
-    if (playerType == Pacman) sendMessage(0, messageLength, "Pacmans have won!");
-    else {
-        sendMessage(0, messageLength, "Ghosts have won!");
-    }
-    /*
-     * Prepare END packet
-     */
-    char buffer[PACKET_TYPE_SIZE];
-    buffer[0] = END;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (clientArr[i] && clientArr[i]->active) {
-            sendPacket(buffer, PACKET_TYPE_SIZE, clientArr[i]); //Send END packet to all players which received START
-        }
-    }
-    //Reset ticks, map data
-    *TICK = 0;
-    if (MAP_CURRENT->next) {
-        MAP_CURRENT = MAP_CURRENT->next;
-    } else {
-        MAP_CURRENT = MAP_HEAD;
-    }
-    reloadMaps();
-    sendStartPackets();
-
-
-}
 
 /**
  * Collision detection, powerup and player movement function executed once per tick
  */
 void processTick(unsigned long int *TICK) {
-    /*
-     * Check if game ending condition is met
-     *  1) Only Ghosts left
-     *  2) Only Pacmans left
-     *  3) No more dots
-     */
-    int ghostCount = 0;
-    int pacmanCount = 0;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (clientArr[i] && clientArr[i]->active) {
-            if (clientArr[i]->playerType == Ghost) ghostCount++; //Count ghosts
-            else if (clientArr[i]->playerType == Pacman) pacmanCount++; //Count pacmans
-        }
-    }
-    //Check if there are any leftover dots
-    bool dotFound = false;
-    for (int i = 0; i < MAP_CURRENT->height; i++) {
-        for (int j = 0; j < MAP_CURRENT->width; j++) {
-            enum mapObjecT_t mapObject = (enum mapObjecT_t) MAP_CURRENT->map[i][j];
-            if (mapObject == Dot) {
-                dotFound = true;
-                break;
-            }
-        }
-        if (dotFound) break;
-    }
-
-    if (ghostCount > 0 && pacmanCount == 0) {
-        endGame(Ghost, TICK);
-    } // No more pacman ghosts win
-    else if (pacmanCount > 0 && ghostCount == 0) {
-        endGame(Pacman, TICK);
-    } // No more ghosts pacman win
-    else if (!dotFound) {
-        endGame(Pacman, TICK);
-    } // No more dots
-
-
-
+    pthread_mutex_lock(&clientArrLock);
     for (int i = 0; i < MAX_PLAYERS; i++) {
         clientInfo_t *player = clientArr[i];
         if (player && player->active && player->playerState != DEAD) {
@@ -1372,6 +1403,7 @@ void processTick(unsigned long int *TICK) {
 
         }
     }
+    pthread_mutex_unlock(&clientArrLock);
 
     //Spawn a powerup in almost random position
     srand((unsigned int) time(0)); //Seed PRNG
@@ -1395,21 +1427,6 @@ void processTick(unsigned long int *TICK) {
         MAP_CURRENT->map[y][x] = powerupPowerPellet;
         if (debugLevel >= DEBUG) printf("DEBUG:\tSpawned powerPellet at (%d:%d)\n", x, y);
     }
+
 }
-
-
-/**
- * Resets map tiles to default values since they have changed during game
- */
-void reloadMaps() {
-    mapList_t *tmp = MAP_HEAD;
-    while (tmp) {
-        memcpy(tmp->map, tmp->mapDefault, MAX_MAP_HEIGHT * MAX_MAP_WIDTH);
-        tmp = tmp->next;
-    }
-}
-
-
-
-
 
