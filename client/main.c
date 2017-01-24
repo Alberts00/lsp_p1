@@ -726,10 +726,6 @@ void drawMap(char *map) {
             }
         }
     }
-
-    // Refresh the window to display changes
-    refresh();
-    wrefresh(mainWindow);
 }
 
 /**
