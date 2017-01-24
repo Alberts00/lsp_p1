@@ -379,7 +379,6 @@ void waitForStartPacket(int *startX, int *startY) {
 
             break;
         } else if (packet[0] == JOINED) {
-            // @TODO this needs additional check. JOINED packet is not received
             playerJoinedEvent(packet);
         }
 
@@ -401,6 +400,7 @@ void createNotificationWindow() {
     box(notificationWindow, 0, 0);
     scrollok(notificationWindow, TRUE);
     writeToWindow(notificationWindow, 0, 0, "Messages ");
+    wbkgd(notificationWindow, WHITE_PAIR);
     refresh();
 }
 
@@ -413,6 +413,7 @@ void createScoreBoardWindow() {
     box(scoreBoardWindow, 0, 0);
     scrollok(scoreBoardWindow, TRUE);
     writeToWindow(scoreBoardWindow, 0, 0, "Scoreboard ");
+    wbkgd(scoreBoardWindow, WHITE_PAIR);
     refresh();
 }
 
@@ -578,6 +579,8 @@ void initCurses() {
     offsetX = offsetX + (NOTIFICATION_WIDTH - offsetX) + NOTIFICATION_OFFSET;
 
     mainWindow = newwin(WORLD_HEIGHT, WORLD_WIDTH, 0, offsetX);
+
+    wbkgd(mainWindow, WHITE_PAIR);
 
     scrollok(mainWindow, TRUE);
 
